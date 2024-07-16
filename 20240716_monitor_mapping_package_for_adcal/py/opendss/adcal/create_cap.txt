@@ -1,0 +1,1472 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal
+from numbers import Number
+import numpy as np
+import pandas as pd
+import re
+import logging as logs
+from enum import IntEnum
+
+# local modules
+# from opendss.api.client import automation
+# from opendss.monitor_mapping import *
+from opendss.monitor_mapping import subgroup_fields, subregion_fields, MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase
+from .maintenance import *
+
+MAX_DEMAND_BY_HALF_HOUR = 100_000  # 100 GW
+
+
+## Usage:   `from opendss.ad_cal import create_cap`
+""" Create a capacity adequate portfolio, for a specified demand level. """
+
+
+def create_cap(
+        o_monitors_map: int = None,   # MonitorMappingOfCircuitByAssetFamily = None
+    ):
+    """ 
+    Keyword Args:
+        o_active_circuit(automation.Circuit):  
+            - Object assigned to `Circuit` instance within OpenDSS simulation.
+        o_monitors_map(MonitorMappingOfCircuitByAssetFamily):
+            - An amalgamated collection of Monitors, extracted for the active circuit of interest.
+            - Generally for this method, the MonitorMap used should be that pertaining to the market dispatchables set. """
+    
+    """ Grab desired collection of monitors and associated generator instance """ 
+    
+    # See PieSAC.CreateCAP.CreateCAP()
+
+    # (_l_monitors_market_res_by_region
+    # ) = o_monitors_map.Generators.subgroups[(regexp_for_regional_control_collection_of_res_generators % (_res_type, _regionname_from)
+    #                                          )].get_collection_of_mapped_monitors()
+    pass
+
+    # See Cell [74] of `basic_adequacy_study.pandas_visualize.B.ipynb`
+    # oDSS.o_monitors_map.Generators.subgroups['market_dispatchables'].shuffle_merit_order()
+    # _l_monitors_dmg_in_crm_by_ai = oDSS.o_monitors_map.Generators.subgroups['market_dispatchables'].get_collection_of_mapped_monitors(b_by_merit_order=True)
+    """ 
+    ## Augment below to make a profile adequate in terms of meeting an LOLE Std.
+
+    b_show_plots = False
+    _reserve_ratio = 0.10  # Max. output of the generators is diminished by a fixed percentage below its max rating
+    d_monitors_in_cap = dict()
+
+    _linename = LINE_TEMPLATE_FOR_REGIONAL_CTRL % 'ai'
+    (np_net_demand_profile_crm_ex_ante 
+     ) = dd_df_derived_results_outerloop['Lines'][
+        ("%s|%s|%s" % (_linename, 'DISPATCHED_DOWN_FOR_CURTAILMENT'.lower(), 'fwd_flows'))]["h1_kW%i" % _ph_idx].values.copy()
+    (np_timesamples
+     ) = dd_df_derived_results_outerloop['Lines'][
+        ("%s|%s|%s" % (_linename, 'DISPATCHED_DOWN_FOR_CURTAILMENT'.lower(), 'fwd_flows'))]['TimeSample'].values.copy()
+
+    np_residual_demand_via_crm_ex_peri = np_net_demand_profile_crm_ex_ante.copy()
+    (np_residual_demand_via_crm_ex_peri_fwd_flows, np_residual_demand_via_crm_ex_peri_rev_flows
+    ) = (np.zeros_like(np_residual_demand_via_crm_ex_peri), np.zeros_like(np_residual_demand_via_crm_ex_peri))
+    
+    (min_dl__crm_ex_peri, max_dl__crm_ex_peri
+     ) = (min_net_demand_level__crm_ex_ante.copy(), max_net_demand_level__crm_ex_ante.copy())
+    
+    for _monitor_crm in _l_monitors_dmg_in_crm_by_ai:
+        # 1. Activating the monitored element, not the Monitor object ...
+        (_gen_crm_fullname
+         ) = oDSS.o_monitors_map.Generators.subgroups['market_dispatchables'].get_linked_element_name_from_monitor(
+                 oDSS.oDSScom.App.ActiveCircuit, 
+                 _monitor_crm, 
+                 b_strip_prepend_of_asset_type=False)
+        o_active_circuit.SetActiveElement(_gen_crm_fullname)
+        _gen_crm = _gen_crm_fullname.split('.')[1]  # strip the asset-type prepend from the generator name
+        logs.critical("Monitor.Name:\t\'%s\' (Monitored Element: %s)", 
+                      _monitor_crm, oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Name)
+        logs.info("Generator properties:\t%s\n", 
+                  oDSS.oDSScom.App.ActiveCircuit.ActiveDSSElement.AllPropertyNames)
+                    
+        _nameplate_rating = float(oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Properties('kW').Val)
+        logs.critical("Mega-Watt rating of unit: %s\n", _nameplate_rating)
+    
+        # Need to create a LoadShape for every generator ... 
+        #    could it be of the format `LoadShape.GeneratorName` in same manner that Monitors have been specified? 
+        #
+        #... of the following format .. could they all point to the same zero MW file input?
+        #new loadshape.AggWindProfile_HV_01 npts=1440 interval=1 pmult=(file='..\\..\\_profiles\\HV\\Wind_CF_0p31_daily_A.csv', col=1, header=no)   // Normalised peak in CSV is c. 1 kW
+        #
+        #... Dedicated loadshape instance for every generator ... each of which points to a common 1,440 x 0 MW CSV input file.
+        #
+        logs.info("Load profile terms:\t%s\n", 
+                  oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Properties('Daily').Val)
+    
+        _loadshape_name = oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Properties('daily').Val  
+        if len(_loadshape_name) > 0: 
+            # 3. Activate the LoadShape, by setting the targetted Name of the Active Class (set in turn to `LoadShape`) 
+            oDSS.oDSScom.App.ActiveCircuit.SetActiveClass('LoadShape')
+            oDSS.oDSScom.App.ActiveCircuit.ActiveClass.Name = _loadshape_name 
+            logs.debug("LoadShape properties (for the \'%s\' loadshape):\t%s\n", 
+                       _loadshape_name,
+                       oDSS.oDSScom.App.ActiveCircuit.ActiveDSSElement.AllPropertyNames)
+            # logs.debug("Load profile contents:\t%s\n", 
+            #            oDSS.oDSScom.App.ActiveCircuit.ActiveDSSElement.Properties('Pmult').Val)
+            (_np_load_factor_predispatch
+             ) = np.array(oDSS.oDSScom.App.ActiveCircuit.ActiveDSSElement.Properties('Pmult').Val[:-1].split(' ')[1:], 
+                          dtype=np.float32)
+            # ^ Generic `override_load_factor ...` code above
+            
+            # v Specific code below ...
+            _max_dispatch_by_gen = (1.0 - _reserve_ratio) * _nameplate_rating
+    
+            if max_dl__crm_ex_peri <= 0.0:   # No more generation is required
+                _np_lf_adjustment = np.zeros_like(_np_load_factor_predispatch)
+                # setattr(oDSS.oDSScom.App.ActiveCircuit.ActiveElement, 'Enabled', False)  # Ensure the Generator remains disabled
+                oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Enabled = False
+            else:
+                # Initialise: Set generator profile to operate with a duty ratio of 100%
+                _np_lf_adjustment = np.full_like(_np_load_factor_predispatch, 
+                                                 _max_dispatch_by_gen/_nameplate_rating, 
+                                                 dtype=np.float32)
+                (np_residual_demand_via_crm_ex_peri_fwd_flows  # initialise
+                 ) = np.subtract(np_residual_demand_via_crm_ex_peri, 
+                                 _np_lf_adjustment * _nameplate_rating) 
+                
+                if _max_dispatch_by_gen <= min_dl__crm_ex_peri:  # Generator serves as base load
+                    (np_residual_demand_via_crm_ex_peri_rev_flows
+                     ) = np.zeros_like(np_residual_demand_via_crm_ex_peri)
+                else:  # During some points in the profile, generator only needs to be part-loaded to meet demand
+                    # Split the (to-be-updated) demand profile into forward and reverse components
+                    np_residual_demand_via_crm_ex_peri_rev_flows = np_residual_demand_via_crm_ex_peri_fwd_flows.copy()
+                    np_residual_demand_via_crm_ex_peri_fwd_flows[(np_residual_demand_via_crm_ex_peri_fwd_flows < 0
+                                                                 )] = 0  # Only retain the positive values
+                    np_residual_demand_via_crm_ex_peri_rev_flows[(np_residual_demand_via_crm_ex_peri_rev_flows >= 0
+                                                                 )] = 0  # Only retain the negative values
+                    # Re-adjust the load-factor trend to accommodate part-loading
+                    _np_lf_adjustment = np.add(_np_lf_adjustment,
+                                               np.multiply(1/_nameplate_rating, np_residual_demand_via_crm_ex_peri_rev_flows)) 
+                    
+                    _ = np.min(_np_lf_adjustment)
+                    if all([_ < 0, _ >= -0.01]):  # Ensure that no negative LF values are retained. 
+                        # Values that exceed a threhold of rounding error (c/. -0.01) are caught by the ValueError() raise below. 
+                        _np_lf_adjustment[_np_lf_adjustment < 0] = 0
+                
+                np_residual_demand_via_crm_ex_peri = np_residual_demand_via_crm_ex_peri_fwd_flows.copy()
+                min_dl__crm_ex_peri = np.min(np_residual_demand_via_crm_ex_peri)
+                max_dl__crm_ex_peri = np.max(np_residual_demand_via_crm_ex_peri)
+    
+                # setattr(oDSS.oDSScom.App.ActiveCircuit.ActiveElement, 'Enabled', True)  # Enable the Generator
+                oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Enabled = True        
+    
+            # ^ Specific code above ...
+            _np_load_factor_for_dispatch_ex_post = np.add(_np_load_factor_predispatch, _np_lf_adjustment)
+    
+            # Resolving LF terms to 6 decimal places ... 
+            _lf_for_dispatch_as_str = "%s" % (np.rint(1_000_000 * 
+                                                      np.maximum(_np_load_factor_for_dispatch_ex_post, 
+                                                                 [0.0]*_np_load_factor_for_dispatch_ex_post.shape[0]))/1_000_000).tolist() 
+            logs.critical("Array of load factor terms (for dispatch):\t%s\n\n", _lf_for_dispatch_as_str[:100])
+            
+            if any([np.min(_np_lf_adjustment) < -0.01, 
+                    np.max(_np_lf_adjustment) > 1.0]):
+                raise ValueError(("Min. demand level is {0} MW; Max. demand level is {1} MW; " +
+                                  "Min. LF is {2}; Max. LF is {3}.\n" + 
+                                  "Full list of LF terms: {4}\n"
+                                  ).format(min_dl__crm_ex_peri, max_dl__crm_ex_peri, np.min(_np_lf_adjustment), 
+                                           np.max(_np_lf_adjustment), _np_lf_adjustment))
+    
+            _x = np.count_nonzero(np_residual_demand_via_crm_ex_peri)
+            logs.critical("Min. demand level is %.6f MW; Max. demand level is %.6f MW; " + 
+                          "Plant rating is: %.2f MW, adjusted for reserve: %.2f MW\n" + 
+                          "No. of unserved time-steps remaining:\t %i (%.2f %s)\n", 
+                          min_dl__crm_ex_peri, max_dl__crm_ex_peri, _nameplate_rating, _max_dispatch_by_gen, 
+                          _x, 100 * _x/1_440, '%')
+            
+            # Re-assign the adjusted load factor to the Element
+            # if getattr(oDSS.oDSScom.App.ActiveCircuit.ActiveElement, 'Enabled') == True:
+            if oDSS.oDSScom.App.ActiveCircuit.ActiveElement.Enabled == True:
+                setattr(oDSS.oDSScom.App.ActiveCircuit.ActiveDSSElement.Properties('Pmult'), 'Val', _lf_for_dispatch_as_str)
+                d_monitors_in_cap.update({_monitor_crm: _nameplate_rating})
+    
+            if b_show_plots:  # Plot the new generation profile 
+                gaxs = [None]
+                gfig, gaxs[0] = plt.subplots(1)
+                gaxs[0].plot(np_timesamples,
+                         np_net_demand_profile_crm_ex_ante, 
+                         label="\'%s\', kWph_%s(%s)" % ('Net Demand (Ex-Ante)', (_ph_idx if _ph_idx <= 3 else 'N'), 'kW'), color='cyan')
+                gaxs[0].plot(np_timesamples,
+                         np_residual_demand_via_crm_ex_peri,
+                         label="\'%s\', kWph_%s(%s)" % ('Net Demand (Ex-Peri)', (_ph_idx if _ph_idx <= 3 else 'N'), 'kW'), color='red')
+                gaxs[0].legend(loc='upper left')
+                
+                gfig.tight_layout()
+                plt.title("Minute-by-minute net demand trends, in kW")
+                plt.legend()
+                plt.show()
+                del (gfig, gaxs)
+
+    """
+
+# How to create a class of nested Enums? One branch for `analysis_types`, another for `surpcrit type`  etc
+#class adcal_analysis_types(IntEnum):
+class adcal_enums:
+
+    class analysis_types(IntEnum):
+        LOLH48 = 1  # half-hourly analysis
+        LOLH24 = 2  # hourly analysis
+        LOLD = 3  # daily peak
+        LOLD50 = 4  # top 50 daily peaks
+
+    class iterative_step_types(IntEnum):  
+        # For applying incremental changes to surplus_criterion and load increments
+        Constant = 1
+        Proportional = 2
+
+    class target_types(IntEnum):  # Target for Surplus/Deficit Calculations
+        LOLE = 1  # Hours/Days in the Year
+        EUE = 2   # Expected Unserved Energy (in MWh terms) per 1 million MWhs (i.e. 1 TWh) of Annual Delivered Energy. 
+
+    class min_gen_modes(IntEnum):  
+        Lenient = 1
+        Strict = 2
+    
+    class maintenance_modes(IntEnum):  
+        _None = 0  # No maintenance
+        """ Automated maintenance, according to a margin specified in absolute terms. 
+        - Objective is to schedule maintenance such that max. capacity margin is achieved each week, in absolute MW terms. """
+        AutoAbs = 1  
+        """ Automated maintenance, according to a margin specified in percentage terms. 
+        - Objective is to schedule maintenance such that max. capacity margin is achieved each week, as a percentage of weekly peak. """
+        AutoPC = 2  # Automated maintenance, according to a margin specified in percentage terms
+        Explicit = 3  # Explicit maintenance enacted across all units
+        MaintenanceRankingByInputOrder = 4
+        MaintenanceRankingByCapacityOrder = 5
+        MaintenanceRankingByCapacitySOOrder = 6  
+
+    class load_model_data_options(IntEnum):  
+        # As per \S 2.2.2 of the AdCal manual
+        Sheet = 1
+        File = 2
+        Build = 3
+
+    def __init__(self):
+        # self.analysis_types = type('analysis_types', (object, ), dict())()  
+        self.analysis_types = adcal_enums.analysis_types  # type('analysis_types', (object, IntEnum), {'LOLH48': 1})()  
+        self.iterative_step_types = adcal_enums.iterative_step_types  
+        self.target_types = adcal_enums.target_types  
+        self.lm_data_types = adcal_enums.load_model_data_options
+
+        """ # self.__dict__[] = type(IntEnum)
+        # analysis_types = IntEnum()
+        self.analysis_types.LOLH48 = 1  # half-hourly analysis
+        self.analysis_types.LOLH24 = 2  # hourly analysis
+        self.analysis_types.LOLD = 3  # daily peak
+        self.analysis_types.LOLD50 = 4  # top 50 daily peaks """
+
+
+# o_monitors_map: MonitorMappingOfCircuitByAssetFamily = None,  # o_monitors_map: int = None,   # MonitorMappingOfCircuitByAssetFamily = None
+# o_map_of_generator_monitors: MonitorMappingOfAssetFamilyBySubentity = None, 
+def adcal_main( 
+        # o_active_circuit: automation.Circuit = None, 
+        # o_subgroup_of_existing_generator_monitors: SubentityForMonitoringBase = None,  # e.g. the `market_dispatchables` subgroup of Generators. 
+        # o_subgroup_of_notional_generator_monitors: SubentityForMonitoringBase = None,  # e.g. the subgroup for new/prospective, dispatchable Generators. 
+        # o_subgroup_of_existing_phes_monitors: SubentityForMonitoringBase = None,  # e.g. the `pumped-hydro` subgroup of Storage units. 
+        o_monitors_map: Union[MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase] = None,  # MonitorMappingOfCircuitByAssetFamily
+        ### l_generator_subgroup_names: List = None, ... 'market_dispatchables_existing'
+        ## df_existing_generator_subgroup_table: pd.DataFrame = None,
+        ## df_notional_generator_subgroup_table: pd.DataFrame = None,
+        o_maint_map: MaintenanceSupervisor = None,  # NEW
+        df_storage_attrs: pd.DataFrame = None,
+        df_case_definitions: pd.DataFrame = None, # create a pandas DF of all the case info?
+        df_raw_demand_profiles: pd.DataFrame = None,
+        df_raw_generator_shapes: pd.DataFrame = None,
+        d_fops_by_asset_family: Dict = None,
+        d_sops_by_asset_family: Dict = None,  # NEW
+        d_genshape_assignment_by_asset_family: Dict = None,
+        e_lole_strategy: IntEnum = None, 
+        t_surpcrit_bounds: Tuple[Number, Number] = None, 
+        i_surpcrit_step: int = 100,
+        e_surpcrit_step_type: IntEnum = None, 
+        e_target_type: IntEnum = None, 
+        i_target_val: int = 8, 
+        i_diagnostic_wk_id: int = 1,
+        t_load_incr_bounds: Tuple[Number, Number] = None, 
+        i_load_incr_step: int = 100,
+        e_load_incr_step_type: IntEnum = None, 
+        e_min_gen_mode: IntEnum = None,
+        e_maintenance_mode: IntEnum=adcal_enums.maintenance_modes.AutoAbs, 
+        e_autoranking_mode: IntEnum=None, 
+        b_optimised_iteration: Optional[Union[Literal[True], Literal[False]]] = False, 
+        b_weekly_op_request: Optional[Union[Literal[True], Literal[False]]] = False, 
+        b_hourly_op_request: Optional[Union[Literal[True], Literal[False]]] = False, 
+        b_wind_rejection_request: Optional[Union[Literal[True], Literal[False]]] = False):
+    """ 
+    Keyword Args:
+
+        o_monitors_map(Union[MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase]):
+            - An amalgamated collection of Monitors, extracted for the active circuit of interest.
+
+        # o_subgroup_of_existing_generator_monitors(SubentityForMonitoringBase):
+        #     - Sub-group of the main, amalgamated collection of Monitors, extracted for the active circuit of interest.
+        #     - This sub-entity of the primary MonitorMap pertains to the existing set of market dispatchables.
+        #     - Contains DataFrame of Monitor data, pertaining to the existing `Generators` subgroup of interest, 
+        #       which is accessible via the `get_datatable()` method. 
+        # o_subgroup_of_notional_generator_monitors(SubentityForMonitoringBase):
+        #     - Sub-group of the main, amalgamated collection of Monitors, extracted for the active circuit of interest.
+        #     - This sub-entity of the primary MonitorMap pertains to the (hypothetical) notional/new set of market dispatchables.
+        #     - Contains DataFrame of Monitor data, pertaining to the notional/new `Generators` subgroup of interest, 
+        #       which is accessible via the `get_datatable()` method. 
+        # o_subgroup_of_existing_phes_monitors(SubentityForMonitoringBase): 
+        #     - Sub-group of the main, amalgamated collection of Monitors, extracted for the active circuit of interest.
+        #     - This sub-entity of the primary MonitorMap pertains to the existing set of market dispatchable, Pumped Hydro.
+        #     - Contains DataFrame of Monitor data, pertaining to the existing `Storage` subgroup of interest, 
+        #       which is accessible via the `get_datatable()` method. 
+
+        o_maint_map(MaintenanceSupervisor):
+            - 
+        df_raw_demand_profiles(pd.DataFrame):
+            - 
+        df_raw_generator_shapes(pd.DataFrame):
+            - Weekly delineated generator shapes [52x values in total]. 
+            - Series of coefficients for scaling generator profiles with, e.g. for the purposes of modelling ambient outage effects.
+        df_storage_attrs(pd.DataFrame):
+            - Definitions of various bodies of aggregated storage. Denoted `PS1`, `PS2` etc in ISAC workbook. (May be superfluous in this interpretation?)
+
+
+        d_fops_by_asset_family(Dict):
+            - Forced Outage Probability (FOP) rates by asset family.
+        d_sops_by_asset_family(Dict):
+            - Scheduled Outage Probability (SOP) rates by asset family.
+        d_genshape_assignment_by_asset_family(Dict):
+
+        t_surpcrit_bounds(Tuple[Number, Number]):
+            - First and Last values of the Surplus Criterion, denominated in MW terms.  
+                > Denoted `SurpCritFIn` and `SurpCritLIn` within the VBA code.
+            - As per \S 2.4.3 of the AdCal User Manual (v 4.00), the Surplus Criterion (SuprCrit) is: 
+                > the Level of Surplus (of rated generation capacity, specified in MW terms) that must be made available on the system to 
+                  avoid a shortfall (in adequacy), i.e. to avoid a Loss-Of-Load scenario.
+                    >> e.g (1). a SurpCrit of 0: 
+                       - Any adequacy scenario (viewed as an instant in time) in which tot. generation < agg. demand ... 
+                         is deemed to constitute a shortfall.
+                    >> e.g (2). a SurpCrit of 100:
+                       - Any adequacy scenario (viewed as an instant in time) in which < +100 MW of generation surplus/buffer is present ... 
+                         is deemed to constitute a shortfall, i.e. more conservative than the SurpCrit=0 example. 
+                    >> e.g (3). a SurpCrit of -100 -> Any adequacy scenario (viewed as an instant in time) in which < +100 MW of a  generation deficit is present ... 
+                         is deemed to constitute a shortfall, i.e. less conservative than the SurpCrit=0 example.
+                > If an Adequacy Std. IS NOT specified:
+                    >> AdCal finds the expected no. of hours for which the system will come within (a fixed) `SurpCrit` level (in MW) of failure.
+                > (Else) if an Adequacy Std. IS specified: 
+                    >> `SurpCrit` is adjusted (iteratively) to find a solution that best adheres to that standard (e.g. 8 hrs per annum having a deficit in generation).
+                    >> The final, converged value of `SurpCrit` mecessary to attain the Std. constitutes the surplus/deficit of the system in MW terms.
+        i_surpcrit_step(int):
+            - First step value to be applied as the surplus criterion, within the iterative loop.
+        e_surpcrit_step_type(IntEnum):
+            - `SurpCrit` adjustments (needed when progressing to an LOLE target, as per the prevailing Adequacy Std.) can be 1 of 2 kinds:
+                > `Constant`: SurpCrit is modified by a constant value for all time-instances in the year, e.g. a delta of 100 MW being applied to every timestep.
+                > `Proportional`: SurpCrit is applied as a proportion of prevailing load in every time-instance.
+        e_target_type(IntEnum):
+            - Which type of metric does the AdCal loop converge to? An LOLE std. or a fixed amount of Expected Unserved Energy (EUE)?
+        i_target_val(int):
+            - Numeric target for convergence. 
+                > if `e_target_type` is `adcal_enums.target_types.LOLE` then the target is a quantity of hours per annum (e.g. 8 hours)
+                > if `e_target_type` is `adcal_enums.target_types.EUE` then the target is a per-million ratio of annual served energy. 
+        i_diagnostic_wk_id(int):
+        t_load_incr_bounds(Tuple[Number, Number]):
+            - Same as definition for `t_surpcrit_bounds`, but applies to demand side of the equation
+        i_load_incr_step(int):
+            - First step value to be applied as the load increment, within the iterative loop.
+        e_load_incr_step_type(IntEnum):
+
+        e_min_gen_mode(IntEnum):
+        e_maintenance_mode(IntEnum):
+        e_autoranking_mode(IntEnum):
+        b_optimised_iteration(bool):
+            > Denoted `OptIterReqdStr` in VBA code. 
+    """
+    """ cnt_cases: int = 1,
+        year_of_case: int = 2020,
+        l_week_indices_for_case: List[int, int] = None, 
+        system_of_case: str = 'A',
+        b_separate_or_combine: bool = False): """
+    logs.critical("%s" % subgroup_fields._member_map_)
+
+    # See `PieSAC.AdCal1_AdCalMain.AdCalMain()` or AdcalV4.10.Module1.AdCalMain
+    # Called from `PieSAC.CreateCAP.CreateCAP()`
+
+    # First action: call `Module1.ReadOpt()` - which collates the options for the study: years to be studied, separate or combined systems, LOLE target etc
+    
+    if df_case_definitions is None:  # As per the `Control` sheet in AdCal
+        df_case_definitions = pd.DataFrame.from_dict({'Year': [2019, 2020, 2021],  # Year of the case(s)
+                                                      'From_Wk': [1, 1, 1],     
+                                                      'To_Wk': [52, 52, 52],     
+                                                      'System': ['A', 'A', 'A'],  # System of the Case (either A or B)
+                                                      'Sep_Comb': ['Sep', 'Sep', 'Sep']})  # Separate or Combined System Analysis (for interconnected systems)
+    i_case_l = len(df_case_definitions.index) - 1  # Retain index of final case within the study
+
+    # Read 'GenShapes' 
+    if df_raw_generator_shapes is None:  # Defining the default shape provided in pre-existing AdCal workbook (`GenA` worksheet)
+        df_raw_generator_shapes = pd.DataFrame.from_dict({
+            1: ([0.981]*5 + [0.983]*4 + [0.984]*4 + [0.980]*5 + [0.976]*4 + [0.970]*4 +  # Shape_01 -> Ambient Temperature shape factors by week for OCGTs
+                [0.962]*5 + [0.963]*4 + [0.968]*4 + [0.974]*5 + [0.978]*4 + [0.981]*4)}, 
+            orient='index') # <- making '1' a row label
+    # Rename indices, passed from file, if they are retained in string format, rather than integer
+    df_raw_generator_shapes.rename(index={_i: (int(_i) if _i.isnumeric() else _i) 
+                                          for _i in df_raw_generator_shapes.index.values if isinstance(_i, str)}, inplace=True)
+    logs.critical("\'df_raw_generator_shapes.index\': %s", df_raw_generator_shapes.index.values)
+    logs.critical("\'df_raw_generator_shapes\': %s\n", df_raw_generator_shapes)
+
+    if e_lole_strategy is None:
+        e_lole_strategy = adcal_enums.analysis_types.LOLH48
+
+    (b_hourly, i_step_hr, i_fac_hr) = (False, 1, 1)  # `fac_hr` is a factor for converting load data (in rated MW terms) to energy terms (MWh terms), if half-hourly.  
+    # if e_lole_strategy.value == adcal_analysis_types.LOLH48.value:
+    if e_lole_strategy.value == adcal_enums.analysis_types.LOLH48.value:
+        (b_hourly, i_step_hr, i_fac_hr) = (True, 1, 0.5)
+    elif e_lole_strategy.value == adcal_enums.analysis_types.LOLH24.value:
+        (b_hourly, i_step_hr, i_fac_hr) = (True, 2, 1)
+
+    """ Rules: No. of Cases must NOT exceed 25. """
+    """ if l_week_indices_for_case is None:
+        l_week_indices_for_case = [1, 52]  # FWeek, LWeek """
+
+    if t_surpcrit_bounds is None:
+        t_surpcrit_bounds = [0, 1_000]  # 10_000]
+    l_surpcrit_by_step = np.arange(t_surpcrit_bounds[0], t_surpcrit_bounds[1], i_surpcrit_step).tolist()
+    if len(l_surpcrit_by_step) > 21:
+        raise ValueError(("At maximum, 21 \'l_surpcrit_by_step\' (={0}) increments can be processed."
+                          ).format(len(l_surpcrit_by_step)))
+
+    if e_surpcrit_step_type is None:
+        e_surpcrit_step_type = adcal_enums.iterative_step_types.Constant
+
+    if e_target_type is None:
+        e_target_type = adcal_enums.target_types.LOLE
+    
+    # Check value of the target
+    if e_target_type.value is adcal_enums.target_types.LOLE.value:
+        if any([i_target_val < 0.1, i_target_val > 8_735]):
+            raise ValueError(("\'i_target_val\' (={0}) is out of range. ").format(i_target_val))
+    elif e_target_type.value is adcal_enums.target_types.EUE.value:
+        if any([i_target_val < 1, i_target_val > 10_000]):
+            # 10_000 per million (or 1%)
+            raise ValueError(("\'i_target_val\' (={0}) is out of range. ").format(i_target_val))
+
+    print("%s\n\n" % df_case_definitions)
+    
+    """ Read diagnostic settings """
+
+
+    if t_load_incr_bounds is None:
+        t_load_incr_bounds = [0, 1_000]  # 10_000]
+    l_load_incr_by_step = np.arange(t_load_incr_bounds[0], t_load_incr_bounds[1], i_load_incr_step).tolist()
+    if len(l_load_incr_by_step) > 21:
+        raise ValueError(("At maximum, 21 \'l_load_incr_by_step\' (={0}) increments can be processed."
+                          ).format(len(l_load_incr_by_step)))
+
+    if e_load_incr_step_type is None:
+        e_load_incr_step_type = adcal_enums.iterative_step_types.Constant
+
+    # Skip Interconnection data
+
+    # Skip requests for optional outputs:
+    """ As per the `b_weekly_op_request`, `b_hourly_op_request` and `b_wind_rejection_request` flags. """
+
+    if e_min_gen_mode is None:
+        e_min_gen_mode = adcal_enums.min_gen_modes.Lenient
+    # End of `ReadOpts()` sub here
+
+    # The following code has been removed from beginning of` read_generator_plant_data` method, as it should only pertain to scheduled maintenance processing
+    if any([e_maintenance_mode == adcal_enums.maintenance_modes.AutoAbs, 
+            e_maintenance_mode == adcal_enums.maintenance_modes.AutoPC]):   # Ln 1148 of `AdcalV4.10.Module1`
+        e_autoranking_mode = adcal_enums.maintenance_modes.MaintenanceRankingByCapacitySOOrder   # By default, can be one of 3 choices
+
+    
+    """ (o_subgroup_of_existing_generator_monitors
+         ) = oDSS.o_monitors_map.Generators.subgroups["market_dispatchables_%s" % 'existing'] """
+
+    """ Loop through all cases in the study. """
+    # logs.critical(df_existing_generator_subgroup_table)
+    # _l_monitors_for_all_crm_dispatchables = o_subgroup_of_existing_generator_monitors.get_collection_of_mapped_monitors(b_by_merit_order=True)
+    o_subgroup_of_dispatchable_producer_monitors = o_monitors_map.subgroups['market_dispatchables_all'] 
+    _l_monitors_for_all_crm_dispatchables = o_subgroup_of_dispatchable_producer_monitors.get_collection_of_mapped_monitors(b_by_merit_order=True)
+    logs.critical("List of all \'%s\' monitors (in Merit Order):\t%s\n", 'market_dispatchables_all', _l_monitors_for_all_crm_dispatchables)
+
+    for _j in range(0, i_case_l+1, 1):  
+        print("%s\n" % df_case_definitions.loc[_j, ['Year', 'From_Wk', 'To_Wk', 'System']])
+
+        _lt_fields_supplementary = [('fop', np.float32), 
+                                    ('genshape_index', np.int8), 
+                                    ('is_storage', np.bool_)]
+
+        # (o_subgroup_of_existing_generator_monitors.df_mapped_monitor_table.loc['fop', :]  # Initialise/Reset the `FOP` field
+        (o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['fop', :]  # Initialise/Reset the `FOP` field
+         ) = np.zeros_like(o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['unique_id', :])# .astype(np.float32)
+        (o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['genshape_index', :]  # Initialise/Reset the `Generator Shape` field
+         ) = np.zeros_like(o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['unique_id', :])# .astype(np.int8)
+        (o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['is_storage', :]  # Initialise/Reset the `Unit Is PS (Pumped Storage)` field
+         ) = np.full_like(o_subgroup_of_dispatchable_producer_monitors.df_mapped_monitor_table.loc['unique_id', :], False) # .astype(np.bool_)
+        
+        logs.debug("\'o_subgroup_of_dispatchable_producer_monitors.dtypes.items()\': %s\n", 
+                      [(_k, _v) for _k, _v in o_subgroup_of_dispatchable_producer_monitors.get_datatable().dtypes.items()])
+        logs.debug("%s" % o_subgroup_of_dispatchable_producer_monitors.get_datatable())
+
+        # Need to transpose the DF, in order to apply a conditional statement to an index (rather than a column)
+        df_existing_gens_transposed = o_subgroup_of_dispatchable_producer_monitors.get_datatable().T  
+        logs.debug("List of Steam Turbine generators:\t%s\n" % 
+                   df_existing_gens_transposed.loc[(df_existing_gens_transposed.subgroup_eid == subgroup_fields.ST.value)])  
+        
+        for _t in _lt_fields_supplementary: # Apply dtypes manually thereafter
+            df_existing_gens_transposed.loc[:, _t[0]] = df_existing_gens_transposed.loc[:, _t[0]].astype(_t[1])  
+        logs.critical("\'df_existing_gens_transposed.dtypes.items()\': %s\n", 
+                      [(_k, _v) for _k, _v in df_existing_gens_transposed.dtypes.items()])
+        
+        #(df_existing_gens_transposed.loc[:, 'is_storage']  # Initialise/Reset the `Unit Is PS (Pumped Storage)` field
+        # ) = np.full_like(df_existing_gens_transposed.loc[:, 'unique_id'], False).astype(np.bool_)
+        # logs.critical("\'o_subgroup_of_dispatchable_producer_monitors.dtypes\': %s\n", o_subgroup_of_dispatchable_producer_monitors.get_datatable().dtypes)
+
+        """  VBA CODE SNIPPET (Ln 488, of `AdcalV4.10.Module1.AdCalMain()`)
+
+        For LoadIncCount1 = 0 To LoadIncCount1L 'Loop for each load increment to Sys 1. Count starts at 0.
+            'Get MW increment for this pass through Sys 1 loop. It will be applied in ProcLoadInc, called from ProcDemandPart1
+            Select Case Sys1
+                Case "A" 'System 1 is A
+                    LoadIncNow1 = LoadAIncF + LoadIncCount1 * LoadAIncStep
+                Case "B" 'System 1 is B
+                    LoadIncNow1 = LoadBIncF + LoadIncCount1 * LoadBIncStep
+            End Select
+
+            For LoadIncCount2 = 0 To LoadIncCount2L 'Loop for each load increment to Sys 2. Count starts at 0.
+                'For Sep studies this loop is not really needed, but left in place and executed
+                'once only. In the next loop (ISys) only Sys1 analysis is then done.
+                'Get MW increment for this pass through Sys 2 loop. It will be applied in ProcLoadInc, called from ProcDemandPart1
+                Select Case Sys1
+                    Case "A" 'System 2 is B
+                        LoadIncNow2 = LoadBIncF + LoadIncCount2 * LoadBIncStep
+                    Case "B" 'System 2 is A
+                        LoadIncNow2 = LoadAIncF + LoadIncCount2 * LoadAIncStep
+                End Select
+
+                'Loop starts here for LoadModWB
+                'To ensure blank file name is written for WB in output of combined systems if
+                'one of the systems does not use WB mods
+                LoadModFileNameRoot1 = Blank
+                LoadModFileNameRoot2 = Blank
+                MoreModWB = False 'Will be set to True in LoadModWB if there is another WB
+                                  'after the current one
+                'Next three variables are incremented/changed in ProcDemandPart1 as necessary
+                ModWBCount = 0
+                AnyLoadMod = False 'LoadMod indicator. Will be set to True if LoadMod requested in Load Sheet
+                AnyLoadMod1 = False 'To show if Sys1 has load mods. If not, number of Sys2 mods
+                                    'determines number of times through loop
+                
+                Do  'Loop for each ModWB: test MoreModWB at end to see if finished
+                    'The load modification with the appropriate WB is done in LoadModWB
+                    'called from ProcDemandPart1 or ProcDemandPart2 in Module 2
+
+                    For ISys = 1 To 2 'If this is a separate system study, For loop is exited after Sys1
+                        Select Case Sys1
+                            Case "A"
+                                Sys = Choose(ISys, "A", "B") 'Sys is set to "A" if ISys=1, to "B" if ISys=2
+                            Case "B"
+                                Sys = Choose(ISys, "B", "A")
+                        End Select
+
+                        'ReadGen must be called every time in a two system study, that is, for each LoadInc value
+                        'for each system. If not, data for the two systems would become mixed up, because processed
+                        'unit data is not saved by system. Also, PS data and GenShape data are not stored for each
+                        'system. The logic depends on the values for one system being used and finished with before
+                        'those for the next system are read.
+                        
+                        ReadGen 'Read generation plant data, including PS data
+                        UpdateTimer 'Position 2 or 14 (ReadGen)
+
+                        'Check if Hourly Wind Rejected output is required. It is flagged as Reqd only if requested,
+                        'only for first LoadIncMod, and only for Sys 1 and Case 1.
+                        HourlyWindRejectOPReqd = False
+                        
+                        Select Case WindRejectOPReqStr = "Yes" And FirstLoadIncMod And (ICase = 1) And (ISys = 1)
+                            Case True
+                                HourlyWindRejectOPReqd = True
+                        End Select
+            
+                        'Get the demand as required, from sheet or file, building new demand shape if necessary.
+                        'and write demand to file. If read from file, check both total and PS parameters.
+                        GetDemand
+
+                        'The following times are set in GetDemand (in Module 2)
+                        'Time 3 or 15 (GetDem)
+            
+                        'ShowDemand (before LoadInc/LoadModWB) if required
+                        'Adjust the demand for LoadInc and/or LoadModWB as required
+                        ProcDemandPart1
+            
+                        'The following times are set in ProcDemandPart1 (in Module 2)
+                        'Time 4 or 16 (ShowDemand)
+                        'Time 5 or 17 (LoadInc)
+                        'Time 6 or 18 (ModWB)
+            
+                        Maint 'Process scheduled maintenance, including PS
+            
+                        UpdateTimer 'Position 7 or 19 (Maint)
+
+                        'Process Pumped Storage generation, that is:
+                        ' for each PS station:
+                        '   build prob table for each week of year
+                        '   and also for week 0, a notional week with no scheduled outages.
+                        'Later in PSShave, (called from PSDemand, called from ProcDemandPart2)
+                        '   the load adjustment for PS takes place and
+                        '   the prob tables for each PS station are combined into a total PS table for each week
+                        'PSProc is called even if there is no PS; in this case a simple PS prob. table is still
+                        'produced for each station and week, with prob. of 0 MW capacity = 1. This makes
+                        'logic of later calculations simpler.
+                        
+                        PSProc
+                        UpdateTimer 'Position 8 or 20 (PSProc)
+                        
+                        'Process generation data
+                        'Calculate gen prob and cumulative gen prob distributions for each week,
+                        'excluding PS plant. Need to do this here afresh for each new demand set because
+                        'LoadInc and/or LoadModWB may affect SO.
+                        
+                        GenProc
+                        UpdateTimer 'Position 9 or 21 (GenProc)
+                        
+                        'Adjust the demand for LoadModWB and/or PS as required
+                        'Write annual and hourly wind rejection outputs as appropriate
+                        'ShowDemand (after LoadInc/LoadModWB) if required
+                        ProcDemandPart2
+                        
+                        'The following times are set in GetDemandPart2 (in Module 2)
+                        'Time 10 or 22 (LoadModWB)
+                        'Time 11 or 23 (PSDemand)
+                        'Time 12 or 24 (LoadModWB)
+                        'Time 13 or 25 (ShowDemand)
+                        
+                        If Sep Then Exit For 'To avoid processing a second system in a separate system study
+                    Next ISys
+
+                    'Check if Weekly, Hourly or Top50 outputs are required. They are flagged as Reqd
+                    'only if requested and only for first LoadInc/LoadMod.
+                    'And for two-area analysis, given only for Sys 1. In the Subs in Module 4 that calculate the
+                    'combined LOLEs (CalcLoleCombA, CalcLOLECombB and CalcLOLECombC)
+                    'only the Sys 1 values for Weekly, Hourly or Top50 are saved. And the writing Subs (WeekOP,
+                    'HourOP and Top50OP) deal only with Sys 1.
+                    WeekOPReqd = False
+                    HourOPReqd = False
+                    Top50OPReqd = False
+                    Select Case ICase = 1 And FirstLoadIncMod
+                        '(If ModWB used, then FirstLoadIncMod denotes first ModWB within first LoadInc)
+                        Case True
+                            Select Case WeekOPReqStr = "Yes"
+                                Case True
+                                    WeekOPReqd = True
+                            End Select
+                            Select Case HourOPReqStr = "Yes"
+                                Case True
+                                    HourOPReqd = True
+                            End Select
+                            Select Case LOLEType = "LOLD50"
+                                Case True
+                                    Top50OPReqd = True
+                            End Select
+                        End Select
+                    
+                        FailTest 'Find LOLE, EUE for sep or comb systems as required, for current
+                                 'load increments, and write results to Conrol sheet.
+                        'Note. Cols 1 to 6 of 3 lines at end of output are cleared in FailTest.
+                        UpdateTimer 'Position 14 or 26 (FailTest)
+
+                        'Weekly, Hourly and Top 50 outputs are possible only if a SurpCrit value of zero is
+                        'encountered in the requested range. Check and write warning message if necessary.
+                        Select Case WeekOPReqd Or HourOPReqd Or Top50OPReqd
+                            Case True
+                                If SurpCritZero Then
+                                    If WeekOPReqd Then WeekOP 'Call WeekOP to give weekly output.
+                                    If HourOPReqd Then HourOP 'Call HourOP to give hourly LOLP and EUE output.
+                                    If Top50OPReqd Then
+                                        Top50OP 'Call Top50OP to get Top 50 output.
+                                        ControlSheet.Activate 'To ensure Control sheet is visible rather than Top50OP sheet
+                                    End If
+                                Else
+                                    Msg = "Weekly, Hourly or Top 50 Outputs are possible only if there is a SurpCrit value of zero" & _
+                                          vbCr & "Proceed with any further analysis?"
+                                    ErrorWarn Msg, ControlSheet, 8, 6
+                                    'If user has answered Yes, continue. Otherwise execution stops.
+                                End If
+                        End Select
+                        
+                        UpdateTimer 'Position 15 or 27 (OptOP)
+                        UpdateTimer 'Position 16 or 28 (Dummy, to avoid having to renumber following
+                                    'a change of code that made Positions 16 and 28 redundant)
+                    
+                        'Show timings (only for first case and first LoadInc and for DiagWeek in range -1 to 52)
+                        Select Case ICase = 1 And FirstLoadIncMod And TimeReqd
+                            '(If ModWB used, then FirstLoadIncMod denotes first ModWB within first LoadInc)
+                            Case True
+                                TimeS = Time(0) 'Start time
+                                TimeP = Time(0) 'Previous time
+                                .Cells(4, 15).Value = "Year " & CStr(YearCase)
+                                .Cells(4, 16).Value = "Wk " & CStr(FWeek) & "-" & CStr(LWeek)
+                                .Cells(4, 17).Value = "Sys 1 = " & Sys1
+                                .Cells(5, 15).Value = SepComb
+                                .Cells(6, 16).Value = "Secs"
+                                .Cells(6, 17).Value = "Tot Secs"
+                                For ITime = 1 To TimeL
+                                    .Cells(6 + ITime, 15).Value = TimeID(ITime)
+                                    .Cells(6 + ITime, 16).Value = Time(ITime) - TimeP
+                                    .Cells(6 + ITime, 17).Value = Time(ITime) - TimeS
+                                    TimeP = Time(ITime)
+                                Next ITime
+                        End Select
+                        FirstLoadIncMod = False
+                    
+                    Loop Until Not MoreModWB 'Loop back for more WB mod files if required
+                    FirstLoadInc = False
+                    
+                Next LoadIncCount2 'Loop back for more Sys2 load incs if required
+                        
+            Next LoadIncCount1 'Loop back for more Sys1 load incs if required
+        
+        Next ICase  
+
+        LoopResult = SurpCritResult 'So that result is returned to LoopAdCal in
+                                    'optional AdCalMain argument if required.
+
+        Application.Cursor = xlDefault 'As advised in VBA help, reset cursor
+        'Beep 'To signal finish
+        End Sub """
+        
+        d_annual_demand_summaries = dict()  # Annualarised metrics for input demand profile
+        # See Ln 380 in `AdcalV4.10.Module1`, for Separate Systems
+        for _idx_of_load_incr, _load_incr in enumerate(l_load_incr_by_step):  # As per Ln 488 in `AdcalV4.10.Module1`
+            """ Where the variable `_idx_of_load_incr` denotes `LoadIncCount1` and `_load_incr` denotes `LoadIncNow1` """
+            # Need to begin interrogating `o_monitors_map`
+            # o_map_of_generator_monitors.get_collection_of_subgroup_names()
+
+            # Or characterise as a subgroup
+            # LoadIncNow1 ... == _load_incr
+
+            # LoadModWB
+
+            # Call to `ReadGen` ... As per Ln 538 in `AdcalV4.10.Module1`
+            #   START: See Ln 1131 in `AdcalV4.10.Module1`
+            read_generator_plant_data(
+                    t_df_generator_portfolios=(df_existing_gens_transposed, ),  # o_subgroup_of_existing_generator_monitors, o_subgroup_of_notional_generator_monitors
+                    df_generator_shapes=df_raw_generator_shapes,  # <- Eventually set this via an external JSON file ... 
+                    df_storage_attrs=df_storage_attrs,
+                    d_fops_by_asset_family=d_fops_by_asset_family, 
+                    d_genshape_assignment_by_asset_family=d_genshape_assignment_by_asset_family)
+
+            # Update the datatables of each subgroup with the generator shape information
+            o_subgroup_of_dispatchable_producer_monitors.refresh_datatable_from_source(df_existing_gens_transposed.T)
+            
+            """ Asset-delineated, FOP and SOP values are assigned to the individual generators within the `read_gen...`  method - This will be reflected in the source datatable too. """
+            # l_existing_gen_technols_in_crm = [subgroup_fields(_).name 
+            #                                   for _ in list(set(df_existing_gens_transposed.subgroup_eid))]  # translating between the `subgroup_eid` code (an integer) and the asset family type (a string)
+            # logs.debug("List of uniquified, EXISTING generator technologies in the CRM:\t%s\n" % l_existing_gen_technols_in_crm)
+            # 
+            # logs.critical("%s" % df_existing_gens_transposed)
+            logs.debug("Datatable of Existing Generator Monitors:\t%s" % o_subgroup_of_dispatchable_producer_monitors.get_datatable())
+            logs.critical("Datatable of Existing, OCGT Monitors:\t%s" % 
+                          df_existing_gens_transposed.loc[(df_existing_gens_transposed.subgroup_eid == subgroup_fields.OCGT.value)])
+
+            # GetDemand ... See `AdcalV4.10.Module2`
+            # Build demand profile, if required ... 48x half-hours per day, 7x days per week, 52x weeks per year.
+            # Read YearSheet, YearFile and YearBuild
+            (d_annual_demand_summaries['GWh'], 
+             d_annual_demand_summaries['PeakMW'],
+             d_annual_demand_summaries['SLF'], d_annual_demand_summaries['TLF'], d_annual_demand_summaries['DLF']
+             ) = process_demand_data(df_demand_profiles=df_raw_demand_profiles, 
+                                     iyg_rate=0)
+
+            # First LoadIncMod ... Ln 199, `AdcalV4.10.AdCal2_AdCalDemandFns` ...
+            """ if _idx_of_load_incr == 0:  # i.e. first iteration of the load increment loop
+                pass
+            else:
+                pass """
+            # if e_load_model_option == adcal_enums.load_model_data_options.Build:
+
+            # See Ln 549 in `AdcalV4.10.AdCal1_AdCalMain` ...
+            # ProcDemandPart1 ... See Ln 297 in `AdcalV4.10.AdCal2_AdCalDemandFns`
+            #       > `MinGenProp` = Proportion of (original) demand that must persist 
+            #                        (after impact of RES has been accounted for via `LoadMod` workbook) 
+            #                        for fully dispatchable plant AFTER subtracting Gen in `LoadMod` workbook
+            #       > `MinGenFloor` = Floor level (in MW) for `MinGen` 
+            (d_annual_demand_summaries['GWh'], 
+             d_annual_demand_summaries['PeakMW'],
+             df_mingen_profiles
+             ) = proc_demand_part_one(
+                     load_incr_val=_load_incr, 
+                     annual_peak_in_MW=d_annual_demand_summaries['PeakMW'], 
+                     df_demand_profiles=df_raw_demand_profiles.copy(),  # Send a copy so it can be modified
+                     b_load_incr_type_is_proportional=(
+                         e_load_incr_step_type==adcal_enums.iterative_step_types.Proportional)) 
+
+            # Ln 395, of `AdcalV4.10.AdCal2_AdCalDemandFns`
+            if all([e_target_type == adcal_enums.target_types.EUE, 
+                    df_case_definitions.at[_j, 'Sep_Comb'] == 'Sep']):
+                # EUE_target_in_MWh 
+                i_target_val *= 0.001 * annual_energy_in_GWh   # `i_target_val` is a value per million 
+            
+            # See Ln 555 in `AdcalV4.10.AdCal1_AdCalMain` ...
+            # -> Ln 1645 in `AdcalV4.10.AdCal1_AdCalMain` ...
+            # Maint  # < Assigns scheduled outages
+            synthesise_scheduled_maintenance(
+                # o_active_circuit,
+                # o_subgroup_of_existing_generator_monitors,
+                # o_subgroup_of_notional_generator_monitors,
+                o_subgroup_of_dispatchable_producer_monitors,
+                o_maint_map, 
+                df_demand_profiles=df_raw_demand_profiles,
+                df_generator_shapes=df_raw_generator_shapes,
+                load_incr_val=_load_incr, 
+                e_maintenance_mode=e_maintenance_mode, 
+                e_autoranking_mode=e_autoranking_mode, 
+                b_load_incr_type_is_proportional=(
+                    e_load_incr_step_type==adcal_enums.iterative_step_types.Proportional))
+            
+            # See Ln 568 in `AdcalV4.10.AdCal1_AdCalMain` ...
+            # -> Ln 2185 in `AdcalV4.10.AdCal1_AdCalMain` ...
+            # PSProc
+
+            # GenProc ... See `AdcalV4.10.Module3`
+            # ... which in turn calls `CalcSProb`, Ln 63 of `AdcalV4.10.Module3`
+            # `UnitGenShape` defaults to a weekly shape of 0, i.e. no shape. 
+            # df_existing_gens_transposed.nameplate_rating  ... See Ln 107 of `AdcalV4.10.Module3`
+
+            ## Explore re-writing AdCal into something more sensible, using local variables etc.
+
+def fop_table_generation_for_phes(
+        # o_active_circuit: automation.Circuit = None, 
+        o_subgroup_of_existing_phes_monitors: SubentityForMonitoringBase = None,  # e.g. the `pumped-hydro` subgroup of Storage units. 
+        o_maint_map: MaintenanceSupervisor=None 
+    ):
+    """ Akin to `PSProc` method in original AdCal """
+    # PSStationNumbMax = 4  # Max No. of PHS stations
+    # See -> Ln 2185 in `AdcalV4.10.AdCal1_AdCalMain` ...
+    pass
+
+def synthesise_scheduled_maintenance(
+        # o_active_circuit: automation.Circuit = None, 
+        # o_subgroup_of_existing_generator_monitors: SubentityForMonitoringBase=None,  # e.g. the `market_dispatchables` subgroup of Generators. What about notional gens too?
+        # o_subgroup_of_notional_generator_monitors: SubentityForMonitoringBase=None,
+        o_subgroup_of_dispatchable_producer_monitors: SubentityForMonitoringBase=None,
+        o_maint_map: MaintenanceSupervisor=None, 
+        df_demand_profiles: pd.DataFrame=None,
+        df_generator_shapes: pd.DataFrame = None,  
+        load_incr_val: Number=0, 
+        e_maintenance_mode: IntEnum=adcal_enums.maintenance_modes.AutoAbs, 
+        e_autoranking_mode: IntEnum=None,  # <- should this be a tuple? (adcal_enums.maintenance_modes.AutoAbs, adcal_enums.maintenance_modes.)
+        b_load_incr_type_is_proportional: Optional[Union[Literal[True], Literal[False]]] = False
+    ):  
+    """ Akin to `Maint` method in original AdCal
+
+    Keyword Args:
+        # o_active_circuit(automation.Circuit):
+        #    - 
+        o_subgroup_of_existing_generator_monitors(SubentityForMonitoringBase):
+            - Sub-group of the main, amalgamated collection of Monitors, extracted for the active circuit of interest.
+            - This sub-entity of the primary MonitorMap pertains to the existing set of market dispatchables.
+            - Contains DataFrame of Monitor data, pertaining to the existing generators subgroup of interest, 
+              which is accessible via the `get_datatable()` method. 
+        o_subgroup_of_notional_generator_monitors(SubentityForMonitoringBase):
+            - Sub-group of the main, amalgamated collection of Monitors, extracted for the active circuit of interest.
+            - This sub-entity of the primary MonitorMap pertains to the (hypothetical) notional/new set of market dispatchables.
+            - Contains DataFrame of Monitor data, pertaining to the notional/new generators subgroup of interest, 
+              which is accessible via the `get_datatable()` method. 
+        o_maint_map(MaintenanceSupervisor):
+            -
+        df_demand_profiles(pd.DataFrame):
+            - 
+        df_generator_shapes(pd.DataFrame):
+            - Weekly delineated generator shapes [52x values in total]. 
+            - Series of coefficients for scaling generator profiles with, e.g. for the purposes of modelling ambient outage effects.
+        load_incr_val(Number):
+        e_maintenance_mode(IntEnum):
+        e_autoranking_mode(IntEnum):
+        b_load_incr_type_is_proportional(Optional[Union[Literal[True], Literal[False]]]):
+
+    """
+    
+    _l_weekly_label_stems = list()
+    if df_demand_profiles is not None:  
+        # Get weekly labels from the column names of the demand profile DataFrame 
+        _l_weekly_label_stems.extend([_[:-3] for _ in get_daily_col_names(df_demand_profiles, (None, 1))])
+    
+    """ This method needs the SO portion of the `read_generator_plant_data` method to be implemented in full. """
+    """ _l_mapped_gens = list()
+    [_l_mapped_gens.extend(_.get_collection_of_mapped_monitors()) 
+     for _ in [o_subgroup_of_existing_generator_monitors, o_subgroup_of_notional_generator_monitors] if _ is not None] """
+    
+    # Create DFs for ... 
+    # ... retaining total capacity of all enabled generators, prior to scheduled outaages being apportioned
+    _np_captot_pre_sched_maint_by_wk = np.zeros(len(_l_weekly_label_stems))  # `WeekSOCap` ... Actually `TCap`
+    _np_captot_pre_sched_maint_by_wk_shp_adjusted = np.zeros(len(_l_weekly_label_stems))  # `WeekSOCapAdj` ... superfluous
+    # ... retaining the total capacity of scheduled outages by weekly occurence
+    _np_captot_on_sched_outage_by_wk = np.zeros(len(_l_weekly_label_stems))  # This is actually `WeekSOCap`
+
+    # Address each subgroup of monitors in turn, such that their respective datatables can be refreshed, as required.
+    _lo_sgrps = [_ for _ in [o_subgroup_of_dispatchable_producer_monitors] if _ is not None]
+    for _j in range(len(_lo_sgrps)):
+        _df_mon_map_by_sgrp = _lo_sgrps[_j].get_datatable()
+
+        # Add new `Nampleated Rating * Scheduled Outage Duration` field to the datatable, if not alrady present
+        if 'nameplate_sod_product' not in _df_mon_map_by_sgrp.index.values:
+            # New index is added by seeking to assign to index at the end of the existing DataFrame instance
+            _n = len(_df_mon_map_by_sgrp.index)
+            # Use `pd.concat` to preserve dtype. Default values to 0.
+            (_df_mon_map_by_sgrp
+             ) = pd.concat([_df_mon_map_by_sgrp, 
+                            pd.DataFrame({_c: 0 for _c in _df_mon_map_by_sgrp.columns.values}, [_n], dtype='i4')])
+            # Rename the new member of the index that has been created
+            _df_mon_map_by_sgrp.rename(index={_n: 'nameplate_sod_product'}, inplace=True)
+        
+        # Address each generator in turn
+        for _mon_name in _lo_sgrps[_j].get_collection_of_mapped_monitors():
+            # What were the SOD values grabbed in `ReadGen` (Ln 1094 of `AdcalV4.10.AdCal1_AdCalMain`), ... as directed from Ln 1666 of `AdcalV4.10.AdCal1_AdCalMain`.
+
+            """ recalling ... Ln 1447 of `ReadGen` in `AdcalV4.10.AdCal1_AdCalMain` ... """
+            # SOD(UCount) is the total scheduled outage duration (in weeks) for the generator, across all outage windows (cumulative). 
+            
+            _idx_of_maint_sched = _df_mon_map_by_sgrp.at['sched_maint_index', _mon_name]
+            _sod = 0  # Scheduled Outage Duration
+            b_explicit_maint = False  # `MExpl` ... to apply for units, pre-arrival/post-retirement
+            if _idx_of_maint_sched > 0:
+                logs.debug("\'_mon_name\', \'sched_maint_index\', MSI object, SOD:\t(%s, %s, %s, %i)" % 
+                              (_mon_name, _idx_of_maint_sched, 
+                               o_maint_map.get_maintenance_schedule(_idx_of_maint_sched), 
+                               o_maint_map.get_maintenance_schedule(_idx_of_maint_sched).get_sod()))
+                _sod = o_maint_map.get_maintenance_schedule(_idx_of_maint_sched).get_sod()
+
+            if _sod == 0:
+                pass
+
+            """ GenCapacity * SOD ... Add a new field to the DataFrame ...  """
+            (_df_mon_map_by_sgrp.at['nameplate_sod_product', _mon_name]
+             ) = _df_mon_map_by_sgrp.at['nameplate_rating', _mon_name] * _sod
+
+            # ShapeAdjust ... See Ln 330 of `AdcalV4.10.AdCal3_AdCalProbTables`
+            # ... just applies the GenShape to the profile of the generator, but only for a slice, between weeks of interest. 
+            """ Compute `WeekSOCap` (the weekly capacity array), as per Ln 1677 of `Maint` in `AdcalV4.10.AdCal1_AdCalMain` ... """
+            # ShapeAdjust CapArray=WeekSOCap, CapNow=UCapB(UCount), WeekFrom=Start1(UCount), WeekTo=Fin1(UCount) - 1 ... passes `ShapeNumb` as an argument
+            
+            """ # Apply the GenShape, if applicable
+            _gen_name = SubentityOfAssetFamily.get_linked_element_name_from_monitor(o_active_circuit, 
+                                                                                    _mon_name,
+                                                                                    b_strip_prepend_of_asset_type=False)
+            o_active_circuit.SetActiveElement(_gen_name)  # Activating the monitored element, not the Monitor object ...
+            if any([o_active_circuit.ActiveElement.Enabled == True, 
+                    o_active_circuit.ActiveElement.Enabled == False]):  # Eventually, only enabled Generators will be factored """
+            if _df_mon_map_by_sgrp.at['enabled', _mon_name] == True: 
+                # Compute the capacity of the generator by week (Initialisation).
+                _np_gencap_by_wk = np.full(len(_l_weekly_label_stems), _df_mon_map_by_sgrp.at['nameplate_rating', _mon_name])
+                _np_captot_pre_sched_maint_by_wk = np.add(_np_captot_pre_sched_maint_by_wk, _np_gencap_by_wk)  # Totalise nameplate capacity across the fleet
+                # Is this generator aligned with a profile shape (ambient temperature correlated etc) that has been captured within the DF of generator shapes?
+                if _df_mon_map_by_sgrp.at['genshape_index', _mon_name] in df_generator_shapes.index.values:  
+                    _np_gencap_by_wk = np.multiply(_np_gencap_by_wk,  # Compute the genshape-adjusted, capacity of the generator by week.
+                                                   df_generator_shapes.loc[_df_mon_map_by_sgrp.at['genshape_index', _mon_name], :].values)  
+                # _np_captot_pre_sched_maint_by_wk
+                _np_captot_pre_sched_maint_by_wk_shp_adjusted = np.add(_np_captot_pre_sched_maint_by_wk_shp_adjusted, _np_gencap_by_wk)  # Totalise, shape-adjusted capacity across the fleet
+
+        logs.critical("\'_np_captot_pre_sched_maint_by_wk\':\t%s\n" % _np_captot_pre_sched_maint_by_wk)
+        logs.critical("\'_np_captot_pre_sched_maint_by_wk_shp_adjusted\':\t%s\n" % _np_captot_pre_sched_maint_by_wk_shp_adjusted)
+
+        if any([e_maintenance_mode == adcal_enums.maintenance_modes.AutoAbs, 
+                e_maintenance_mode == adcal_enums.maintenance_modes.AutoPC]):
+            # Either sort by Capacity (==`nameplate_rating` field), or by Capacity x SO (==`nameplate_sod_product` field)
+            # See BubbleSort, Ln 1720 of `AdcalV4.10.AdCal1_AdCalMain` ... sort in descending order
+            if e_autoranking_mode == adcal_enums.maintenance_modes.MaintenanceRankingByInputOrder: 
+                _df_mon_map_by_sgrp.sort_values(by=['unique_id'], axis=1,  # i.e. sort by index (rather than column)
+                                                ascending=True,  # i.e. ascending order
+                                                inplace=True)
+            elif e_autoranking_mode == adcal_enums.maintenance_modes.MaintenanceRankingByCapacityOrder: 
+                _df_mon_map_by_sgrp.sort_values(by=['nameplate_rating', 'unique_id'], axis=1, ascending=False,  # i.e. descending order
+                                                inplace=True)
+            elif e_autoranking_mode == adcal_enums.maintenance_modes.MaintenanceRankingByCapacitySOOrder: 
+                _df_mon_map_by_sgrp.sort_values(by=['nameplate_sod_product', 'unique_id'], axis=1, ascending=False, inplace=True)
+
+        # Read data for when Scheduled Outages are not permitted, ... 
+        # as per Ln 1742 of `AdcalV4.10.AdCal1_AdCalMain` -> `ReadNoSOData()` on Ln 1873 of `AdcalV4.10.AdCal1_AdCalMain`
+        # See `3.3.4 Scheduled Outage Constraints` section of the AdCal manual
+        
+        # logs.critical(".get_collection_of_mapped_monitors():\t%s" % _lo_sgrps[_j].get_collection_of_mapped_monitors())
+        if not e_maintenance_mode == adcal_enums.maintenance_modes.Explicit: 
+            for _mon_name in _lo_sgrps[_j].get_collection_of_mapped_monitors():
+                # Go to Ln 1750 of `AdcalV4.10.AdCal1_AdCalMain`
+                _idx_of_maint_sched = _df_mon_map_by_sgrp.at['sched_maint_index', _mon_name]
+                if _idx_of_maint_sched > 0:
+                    _sod = o_maint_map.get_maintenance_schedule(_idx_of_maint_sched).get_sod()  # SODNow
+
+                    """ if e_load_incr_step_type == adcal_enums.iterative_step_types.Proportional """  # Ln 1776
+                    if b_load_incr_type_is_proportional:  # Increments in Load are proportional
+                        max_wk_adjust = 0
+                    else:  # Constant increments in Load are applied (in MW terms)
+                        # df_demand_profiles.loc[:, :] += load_incr_val
+                        max_wk_adjust = load_incr_val
+
+                    # For IWeek = 1 To IWeekL
+                    # CheckNoSo(StartWeek, Duration)  ... Look at mask to see if scheduled outages are forbidden for this week
+                    
+                    # First available week for SO is that with a masked value of True
+                    firstSOWeek = o_maint_map.get_maintenance_schedule(_idx_of_maint_sched).get_weekly_mask(None).index(True)  
+
+                    logs.debug("Weekly labels = %s\n" % [(_jj, _wk) for _jj, _wk in enumerate(_l_weekly_label_stems)])
+                    logs.critical("\'%s\' has a tot. sched. outage duration (SOD) of %i weeks, beginning in Wk %i" % 
+                                  (_mon_name, _sod, firstSOWeek + 1))
+
+                    # See Ln 1678 for ShapeAdjust enactment on WeekSOCap
+                    # See Ln 1954, `Sub WeekOP()` of `AdcalV4.10.AdCal1_AdCalMain` ... and how `WeekSOCap` variables get amended ...
+                    # TCap?  See Ln 1212 of `AdcalV4.10.AdCal1_AdCalMain` ... Total Capacity obtained from `read_generator_plant_data` method ... line 1295 of this method
+                    (_idx_of_optimum_wk_of_sod, _min_wkly_abs_margin, _max_wkly_pc_margin) = (None, None, None)
+                    for _jj, _wk in enumerate(_l_weekly_label_stems):
+                        if o_maint_map.get_maintenance_schedule(_idx_of_maint_sched).get_weekly_mask(_jj) == True: 
+                            # Scheduled maintenance is available for this week
+                            
+                            # Project impact of scheduling all maintenance from this week of the year onwards
+                            """ Source code, Ln 1789 of `AdcalV4.10.AdCal1_AdCalMain` ... 
+                            'For highest absolute margin, find lowest SODSum (weekly peak + SO)
+                             SODSum = SODSum + DemMaxWeek + WeekSOCap(ISys, WeekNow)  """  # <- I think this is WRONG. Margin should be delta between Capacity and Demand
+                            (_sum_of_wkly_demand_peaks_over_so_window
+                             ) = sum([get_peak_demand(
+                                        df_demand_profiles, ((_jj + _kk + 1 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 1), None)) 
+                                      for _kk in range(_sod)])                                                                                                           # == `DemMaxWeek`
+                            (_sum_of_wkly_demand_peaks_over_so_window_recovered
+                             ) = _sum_of_wkly_demand_peaks_over_so_window - (_sod * max_wk_adjust)                                                                       # == `DemMaxWeekOrig`
+                            
+                            (_sum_of_wkly_abs_margin_over_so_window
+                             ) = sum([_np_captot_on_sched_outage_by_wk[(_jj + _kk + 0 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 0)] 
+                                      for _kk in range(_sod)])  # `WeekSOCap` * no of weeks on outage
+                            _sum_of_wkly_abs_margin_over_so_window += _sum_of_wkly_demand_peaks_over_so_window                                                           # == `SODSum`
+
+                            (_sum_of_wkly_pc_margin_over_so_window                                                                                                       # == `MargSum`
+                             ) = sum([((_np_captot_pre_sched_maint_by_wk[(_jj + _kk + 0 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 0)] -                              # == `TCap`
+                                        _np_captot_on_sched_outage_by_wk[(_jj + _kk + 0 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 0)] -                              # == `WeekSOCap`
+                                        get_peak_demand(df_demand_profiles, ((_jj + _kk + 1 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 1), None))) /                  # == `DemMaxWeek`
+                                        (get_peak_demand(df_demand_profiles, ((_jj + _kk + 1 if _jj + _kk + 1 <= WEEKS_PER_YEAR else _kk + 1), None)) - max_wk_adjust))  # == `DemMaxWeekOrig`
+                                      for _kk in range(_sod)])
+                            
+                            logs.debug("\'Sum-of-Weekly-Abs-Margin\':\t%s" % _sum_of_wkly_abs_margin_over_so_window)
+                            logs.debug("\'Sum-of-Weekly-Percent-Margin\':\t%s" %_sum_of_wkly_pc_margin_over_so_window)
+
+                            if any([_jj == (firstSOWeek - 1), _min_wkly_abs_margin is None, _max_wkly_pc_margin is None]):
+                                _min_wkly_abs_margin = _sum_of_wkly_abs_margin_over_so_window
+                                _max_wkly_pc_margin = _sum_of_wkly_pc_margin_over_so_window
+                                _idx_of_optimum_wk_of_sod = _jj  # `IWeekSO`
+                            elif _jj > (firstSOWeek - 1):
+                                # Find the best starting week
+                                if any([all([e_maintenance_mode == adcal_enums.maintenance_modes.AutoAbs, 
+                                                 _min_wkly_abs_margin > _sum_of_wkly_abs_margin_over_so_window]), 
+                                        all([e_maintenance_mode == adcal_enums.maintenance_modes.AutoPC, 
+                                             _max_wkly_pc_margin < _sum_of_wkly_pc_margin_over_so_window])]): 
+                                    _idx_of_optimum_wk_of_sod = _jj  # `IWeekSO`  """
+
+                                _min_wkly_abs_margin = min(_min_wkly_abs_margin, _sum_of_wkly_abs_margin_over_so_window)
+                                _max_wkly_pc_margin = max(_max_wkly_pc_margin, _sum_of_wkly_pc_margin_over_so_window)
+
+                    # ^ Trying to determine the best week for starting Scheduled Outages
+                    logs.critical("Optimum scheduling of outages begins on Wk %i of %i\n" % 
+                                  (_idx_of_optimum_wk_of_sod + 1, WEEKS_PER_YEAR))
+        
+                # Select Case IWeekSO > 0 ... Ln 1823 of `AdcalV4.10.AdCal1_AdCalMain` ...
+                # Assign `Start Wk` of scheduled maintenance ... _df_mon_map_by_sgrp.at['sched_maint_start_wk', _mon_name]
+                if _idx_of_optimum_wk_of_sod > 0:
+                    _df_mon_map_by_sgrp.at['sched_maint_start_wk', _mon_name] = _idx_of_optimum_wk_of_sod + 1
+                    _df_mon_map_by_sgrp.at['sched_maint_end_wk', _mon_name] = _idx_of_optimum_wk_of_sod + _sod + 1
+                    (_np_captot_on_sched_outage_by_wk[_idx_of_optimum_wk_of_sod:_idx_of_optimum_wk_of_sod + _sod]
+                     ) += _df_mon_map_by_sgrp.at['nameplate_rating', _mon_name]  # Adding the nameplate value of the schedule outage
+
+            # End of monitor for-loop
+
+        """ Feed changes back into the original, subgroup linked datatable. 
+        Ensures that DataFrames do not have to be returned (as they are modified in `in-place`). """
+        _lo_sgrps[_j].refresh_datatable_from_source(_df_mon_map_by_sgrp)
+    
+
+
+def proc_demand_part_one(
+        mingen_prop_as_percent: Number=0, 
+        mingen_floor_in_mw: Number=0,
+        load_incr_val: Number=0, 
+        annual_peak_in_MW: Number=0, 
+        df_demand_profiles: pd.DataFrame=None,
+        b_load_incr_type_is_proportional: Optional[Union[Literal[True], Literal[False]]] = False
+    ) -> None:  # -> pd.DataFrame (of MinGens)
+    """  Adjust the demand for LoadInc and/or LoadModWB as required. 
+
+    Keyword Args:
+        mingen_prop_as_percent(Number):
+            - Proportion of original load which sets a minimum below which load must not fall after LoadModWB impact (wind)
+        mingen_floor_in_mw(Number):
+            - Floor value for Min Generation. A limit, below which, `mingen_prop_as_percent` cannot go.
+        annual_peak_in_MW(Number):
+        df_demand_profiles(pd.DataFrame):
+        b_load_incr_type_is_proportional(Optional[Union[Literal[True], Literal[False]]]):
+    """
+
+    """ Create a Min Gen profile/series that is 'like', i.e. same structure, as df_demand_profiles """
+
+    # Choose the appropriate value for `LoadIncrNow`
+    _load_incr_frac = None
+
+    """ See Ln 343 of `AdcalV4.10.AdCal2_AdCalDemandFns`, and call to `ProcLoadInc` function. """
+    # ProcLoadInc ... to increment loads ... see Ln 410 of `AdcalV4.10.AdCal2_AdCalDemandFns`
+    
+    ## ProcLoadInc (START) ##
+    # annual_energy_in_GWh = np.sum(df_demand_profiles.loc[:, :].values) / 2_000
+    logs.debug("\'df_demand_profiles.columns\' (len=%i):\t%s" % 
+               (len(df_demand_profiles.columns.values), df_demand_profiles.columns.values))
+
+    # df_mingen_profiles = pd.DataFrame.from_dict({_k: np.zeros(len(df_demand_profiles.index.values)) 
+    #                                              for _k in df_demand_profiles.columns.values})
+    df_mingen_profiles = df_demand_profiles.copy()
+    logs.debug("\'df_mingen_profiles\' [shape=(%i, %i)]\n" % df_mingen_profiles.shape)
+    df_mingen_profiles.loc[:, :] *= mingen_prop_as_percent  # Ln 497. For Constant `LoadInc`, MinGen is computed before the increment is applied
+    
+    if b_load_incr_type_is_proportional:  # Increments in Load are proportional
+        _load_incr_frac = load_incr_val / annual_peak_in_MW
+        # Apply half-hourly increment in load is: `existing MW` * _load_incr_frac
+        df_demand_profiles.loc[:, :] *= (1 + _load_incr_frac)
+    else:  # Constant increments in Load are applied (in MW terms)
+        df_demand_profiles.loc[:, :] += load_incr_val
+
+    # Need to check that Max Demand is not exceeded (hard set to 100_000 MW in AdCal main)
+    if df_demand_profiles.loc[:, :].max(axis=None) > MAX_DEMAND_BY_HALF_HOUR:
+        raise ValueError(("Max Demand (half-hourly), {0} MW, cannot exceed the upper limit: {1} MW.\n"
+                          ).format(df_demand_profiles.loc[:, :].max(), MAX_DEMAND_BY_HALF_HOUR))
+    
+    if df_mingen_profiles.loc[:, :].min(axis=None) < mingen_floor_in_mw:  # Assert Min Gen Floor
+        for _doy_col in df_mingen_profiles.columns:
+            df_mingen_profiles.loc[:, df_mingen_profiles[_doy_col] < mingen_floor_in_mw] = mingen_floor_in_mw
+
+    if not b_load_incr_type_is_proportional: 
+        df_mingen_profiles.loc[:, :] += load_incr_val
+
+    """ Update the annual energy and peak MW totals. """
+    annual_energy_in_GWh = compute_energy_total(df_demand_profiles, 0.5, 'GWh', None)
+    annual_peak_in_MW = get_peak_demand(df_demand_profiles, None)
+    ## ProcLoadInc (END) ##
+
+    """ 'Read LoadModWB option. Ln 347, of `AdcalV4.10.AdCal2_AdCalDemandFns` ... LoadModification 
+    See \S2.3.4 of AdCal documentation. 
+
+    ... Not urgent just now, but an interesting approach for the modelling of wind. """
+
+    return annual_energy_in_GWh, annual_peak_in_MW, df_mingen_profiles
+
+
+def process_demand_data(e_load_model_option: IntEnum=None, 
+                        df_demand_profiles: pd.DataFrame=None,
+                        iyg_rate: float=0.0) -> Tuple[Number, Number, Number, Number, Number]:
+    """ 
+    Keyword Args:
+        e_load_model_option(IntEnum):
+            - Define the approach for generating the load data, as employed within the formation of half-hourly demand profiles. 
+    """ 
+
+
+    """ Year Case Data - See `AdCal3_AdCalProbTables.RowYearFind('LoadA', '2', 'Load')` sub-routine. """
+
+    """ Building future load data, encompassing the following parameters:
+        > Total (Annual, All-island) Energy Demand (specified in GWh)
+        > Peak (All-island) Demand  
+        
+        > (Total) System Load Factor, denoted `TLF` (in %): 
+            >> defined as ... Ratio of the Mean Annual Demand to the Peak Annual Demand.
+        > Seasonal Load Factor, denoted `SLF` (in %)
+            >> defined as ... Ratio of the Mean of the Daily Demand Peaks to the Peak Annual Demand.
+        > Daily Load Factor, denoted `DLF` (in %)
+            >> defined as ... Ratio of the Mean of the `Daily Load Factor * Daily Peak Demand` Products to the Peak Annual Demand.
+        
+        >> Note: It is shown that: `TLF = SLF * DLF`, i.e. (Total) System Load Factor is composed from 2x components
+
+        > In-Year Growth Rates for Load
+
+     Produces a projected future loadshape
+
+    """
+    # 1. Determine whether to operate in `Sheet`, `File` or `Build` mode (as per \S 2.2.2 of Manual)
+    if e_load_model_option is None:
+        e_load_model_option = adcal_enums.load_model_data_options.Sheet
+
+    if abs(iyg_rate) > 0.5:  # Check that in-year growth rate is within -50 % and +50%
+        raise ValueError(("Rate of In-Year Growth (IYG) must be within -50 {0} and +50 {1}; " +
+                          "Value provided is {2}.\n"
+                          ).format('%', '%', iyg_rate))
+
+    # Other checks ... that the input CSV has 364 x 48 entries?
+
+    # YearCase = 2040, Base Load is on the same Row ... i.e. 
+    # YearFile = Blank
+    # YearBuild = Blank
+
+    annual_energy_in_GWh = None
+    annual_peak_in_MW = None
+    _sum_of_all_daily_peaks = None
+    seasonal_load_factor = None  # SLF
+    total_load_factor = None  # TLF
+    daily_load_factor = None  # DLF
+
+    if e_load_model_option == adcal_enums.load_model_data_options.Sheet:
+        """ Line 191 of `AdCal2_AdCalDemandFns` -> `AdCal2_AdCalDemandFns.ReadDemSheet()` """  
+        # Read Demand Data from Sheet
+
+        # Calculate 5x Demand Summary values for: Energy, Peak, SLF, DLF and TLF
+
+        # Read IYG (In-Year Growth)
+        # logs.critical("\'subgroup_fields.get_names()\':\t%s\n" % [_k.lower() for _k in subgroup_fields.get_names()[1:]])
+
+        # Line 586 of `AdCal2_AdCalDemandFns.ReadDemSheet()`
+        # RowStepDemSheet = 11
+        # Row = RowBaseLoad + RowStepDemSheet + 1- (IWeek - 1) + IDay == ...
+
+        # RowBaseLoad is 2
+
+        # See 364 profiles contained within `TES_2019_AdCal_Profiles_364d_AI.csv`
+        # Find the `EnergySum`, `DayPeakSum`, `DemMaxYear`, `DemMaxWeek`, `DemMinDay` and `DemMaxDay` variables ...
+        """ Populating ... Public DemandWeek(1 To 2, PSTotStateMax, 1 To 52) As DemWeekRec 
+        in which `DemWeekRec` is a Public, user-defined Type, consisting the following fields: 
+            > HourDem(7, 48) As Single
+            > DayMax(7) As Single
+            > DayMin(7) As Single
+            > WeekMax As Single """
+        # i.e. Seeking to segregate All-Island Demand Profile into Weekly sub-profiles
+        # logs.critical("Columns of demand profile:\t%s\n" % df_demand_profiles.columns)
+        logs.info("Week 2, Day 5:\t%s\n" % df_demand_profiles.loc[:, 'wk02d05'])
+
+        # annual_energy_in_GWh = np.sum(df_demand_profiles.loc[:, :].values) / 2_000
+        annual_energy_in_GWh = compute_energy_total(df_demand_profiles, 0.5, 'GWh', None)
+        logs.critical("Annual Energy Demand = %.3f GWh\n" % annual_energy_in_GWh)
+
+        annual_peak_in_MW = get_peak_demand(df_demand_profiles, None)
+        # logs.critical("Annual Peak Demand [1] = %.3f MW\n" % np.max(df_demand_profiles.loc[:, :].values))
+        logs.critical("Annual Peak Demand [2] = %.3f MW\n" % annual_peak_in_MW)
+        
+        # logs.debug("Peak Demand for Wk02 [3] = %.3f MW\n" % 
+        #            np.max(df_demand_profiles.loc[:, ['wk02d01', 'wk02d02', 'wk02d03', 'wk02d04', 'wk02d05', 'wk02d06', 'wk02d07']].values))
+        # logs.debug("Peak Demand for Wk02 [4] = %.3f MW\n" % get_peak_demand(df_demand_profiles, (2, None)))
+        
+        # logs.debug("Peak Demand for Wk02d05 [5] = %.3f MW\n" % get_peak_demand(df_demand_profiles, (2, 5)))
+        # logs.debug("Peak Demand for \*d05 [6] = %.3f MW\n" % get_peak_demand(df_demand_profiles, (None, 5)))
+        
+        sum_of_all_daily_peaks = np.sum([np.max(df_demand_profiles.loc[:, _doy_col].values) for _doy_col in df_demand_profiles.columns])
+        cnt_days_of_year = len(df_demand_profiles.columns)
+        seasonal_load_factor = (sum_of_all_daily_peaks / cnt_days_of_year) / annual_peak_in_MW
+        logs.critical("Seasonal Load Factor = %.3f \n" % seasonal_load_factor)
+        
+        total_load_factor = (1_000 * annual_energy_in_GWh) / (annual_peak_in_MW * (24 * cnt_days_of_year))
+        logs.critical("Total Load Factor = %.3f \n" % total_load_factor)
+        
+        daily_load_factor = total_load_factor / seasonal_load_factor
+        logs.critical("Daily Load Factor = %.3f \n" % daily_load_factor)
+
+    return annual_energy_in_GWh, annual_peak_in_MW, seasonal_load_factor, total_load_factor, daily_load_factor
+
+
+def compute_energy_total(df_demand_profiles: pd.DataFrame=None,
+                         time_interval_in_hours: Number=0.5,  
+                         units: str='GWh', 
+                         t_week_and_day_pair: Optional[Tuple[Union[int, None], Union[int, None]]]=None) -> Number:
+    """ Default half-hourly, time interval. """
+    return (time_interval_in_hours * 
+            np.sum(_get_df_profiling_slice(df_demand_profiles, t_week_and_day_pair).values) * 
+            (0.001 if units == 'GWh' else 1))
+
+
+def get_peak_demand(df_demand_profiles: pd.DataFrame=None,
+                    t_week_and_day_pair: Optional[Tuple[Union[int, None], Union[int, None]]]=None) -> Number:
+    """ Time-period flexible means of computing peak demand.
+
+    Keyword Args:
+        df_demand_profiles(pd.DataFrame):
+            - 
+        t_week_and_day_pair(Optional[Tuple[Union[int, None], Union[int, None]]]):
+            - A pair of one-indexed values, denoting Wk-of-the-Year, and Day-of-the-Wk, respectively. 
+            - If the Tuple is set to None, the method defaults to annualised data. """
+    return np.max(_get_df_profiling_slice(df_demand_profiles, t_week_and_day_pair).values)
+
+
+def get_daily_col_names(df_demand_profiles: pd.DataFrame=None,
+                        t_week_and_day_pair: Optional[Tuple[Union[int, None], Union[int, None]]]=None) -> List:
+    """ Time-period flexible slicing of wk/day labels from the main demand profile DataFrame.
+
+    Keyword Args:
+        df_demand_profiles(pd.DataFrame):
+            - 
+        t_week_and_day_pair(Optional[Tuple[Union[int, None], Union[int, None]]]):
+            - A pair of one-indexed values, denoting Wk-of-the-Year, and Day-of-the-Wk, respectively. 
+            - If the Tuple is set to None, the method defaults to annualised data. """
+    return _get_df_profiling_slice(df_demand_profiles, t_week_and_day_pair).columns.values
+
+
+def _get_df_profiling_slice(df_demand_profiles: pd.DataFrame=None,
+                            t_week_and_day_pair: Optional[Tuple[Union[int, None], Union[int, None]]]=None) -> pd.DataFrame:
+    """ Time-period flexible means of extracting a slice of the demand profile DataFrame.
+
+    Keyword Args:
+        df_demand_profiles(pd.DataFrame):
+            - 
+        t_week_and_day_pair(Optional[Tuple[Union[int, None], Union[int, None]]]):
+            - A pair of one-indexed values, denoting Wk-of-the-Year, and Day-of-the-Wk, respectively. 
+            - If the Tuple is set to None, the method defaults to annualised data. 
+    Return: 
+        pd.DataFrame: """
+    import re
+    # Construct the regular expression, based on `wk01d01` stylised column names
+    if t_week_and_day_pair is None:  # Default ot Annual Maximum
+        col_select_regexp = '^wk*'   # i.e. process all columns for the year
+    else:
+        _d_date_keys = dict()
+        _d_date_keys.update({_k: (None if _x is None 
+                                  else ("0%s" % _x if _x < 10 
+                                        else "%s" % _x)) for _k, _x in zip(['wk_of_yr', 'day_of_wk'], 
+                                                                           t_week_and_day_pair)})
+        col_select_regexp = (r'^wk\d+' if _d_date_keys['wk_of_yr'] is None else "^wk%s" % _d_date_keys['wk_of_yr'])
+        col_select_regexp += ("" if _d_date_keys['day_of_wk'] is None else "d%s$" % _d_date_keys['day_of_wk'])
+        # logs.debug("\'col_select_regexp\':\t%s" % col_select_regexp)
+
+    _l_matched_col_names = list()
+    _l_matched_col_names.extend([_ for _ in df_demand_profiles.columns.values if re.match(col_select_regexp, _) is not None])
+    logs.debug("\'_l_matched_col_names\':\t%s" % _l_matched_col_names)
+    return df_demand_profiles.loc[:, df_demand_profiles.columns.isin(_l_matched_col_names)]
+
+
+def read_generator_plant_data(
+        step_bld_var: int = 10,  
+        step_comp_var: int = 10,  
+        t_df_generator_portfolios: Union[pd.DataFrame, Tuple[pd.DataFrame], Tuple[pd.DataFrame, pd.DataFrame]] = None, 
+        df_generator_shapes: pd.DataFrame = None,  
+        df_storage_attrs: pd.DataFrame = None, 
+        d_fops_by_asset_family: Dict = None,
+        d_genshape_assignment_by_asset_family: Dict = None
+    ):
+    """ 
+    Keyword Args:
+        step_bld_var(int):
+            - Step size (in MW) for building SProb table. 
+        step_comp_var(int):
+            - Step size (in MW) for compressing the SProb table.
+        t_df_generator_portfolios(Tuple[pd.DataFrame, ...]):  # <- Question of whether the transposition should be enacted internally to this method, and a collection of `SubentityForMonitoringBase` instances should be passed as an arg instead?
+            - (A collection/tuple of) the containing DataFrame(s) of Monitor data, pertaining to the Generator subgroup(s) of interest. 
+            - Transposed from their original form.
+            - Multiple DataFrames can be passed, with the same actions enacted on them. 
+        df_generator_shapes(pd.DataFrame):
+            - Weekly delineated generator shapes [52x values in total]. 
+            - Series of coefficients for scaling generator profiles with, e.g. for the purposes of modelling ambient outage effects.
+        df_storage_attrs(pd.DataFrame):
+            - Definitions of various bodies of aggregated storage. Denoted `PS1`, `PS2` etc in ISAC workbook. (May be superfluous in this interpretation?)
+        d_fops_by_asset_family(Dict):
+        d_genshape_assignment_by_asset_family(Dict):
+            - Label of shape (as contained within the `df_generator_shapes` arg) that pertains to each asset family type. 
+            - Asset families without a designated shape should be assigned to a value of `None` inside the Dict. 
+            - Shape parameters serve to derate the available nameplate capacity of a technology during a given week of the year.
+    """
+    # See Ln 1222 in `AdcalV4.10.Module1`
+    # ... 'RowYearFind is a subroutine that searches the specifed worksheet and returns the row ...
+    if t_df_generator_portfolios is None:  # As per the `GenA` sheet in AdCal
+        """ Could this step be replaced by reading from the incident collection of generators instead? """
+        t_df_generator_portfolios = (pd.DataFrame.from_dict({'Name': ['AA1', 'AA2'],  
+                                                             'Rated_Capacity': [21, 22],     
+                                                             'FOP': [0.038, 'Code 1']}), ) # Forced Outage Probability
+    else:
+        if isinstance(t_df_generator_portfolios, pd.DataFrame):  
+            t_df_generator_portfolios = (t_df_generator_portfolios, )  # Convert into a 1-element tuple (of DataFrames)
+
+    # Read '(Pumped) Storage' Properties 
+    if df_storage_attrs is None:
+        df_storage_attrs = pd.DataFrame.from_dict({'MWh': [1_540], "\u03B7": [0.70], 'pgfac': [1.00], 'step_mw': [1]})
+    logs.debug("eta: %s\n", "\u03B7")
+    logs.critical("\'df_storage_attrs\': %s\n", df_storage_attrs)
+    
+    # Forced Outage Probabilities by Asset Family
+    if d_fops_by_asset_family is None:
+        # subgroup_fields.get_names()
+        d_fops_by_asset_family = {_k.lower(): 0.000 for _k in subgroup_fields.get_names()[1:]}  # 'ocgt' ...
+
+    """ Action: Pair up monitors in collection with the appropriate FOP ... or pair up externally? """
+    # logs.critical("\'d_genshape_assignment_by_asset_family\':\t%s" % d_genshape_assignment_by_asset_family)
+    for _j, _df_pflo in enumerate(t_df_generator_portfolios):
+
+        #logs.critical("\'_df_pflo.dtypes\': %s\n", _df_pflo.dtypes.__dict__)
+        logs.critical("\'_df_pflo.index.dtype\': %s\n", _df_pflo.index.dtype)
+
+        (_l_gen_technols_by_pflo
+         ) = [subgroup_fields(_).name 
+              for _ in list(set(_df_pflo.subgroup_eid))]  # translating between `subgroup_eid` codes (<int>) -> asset family types (<str>)
+        logs.debug("List of uniquified, generator technologies in the CRM/Portfolio:\t%s\n" % _l_gen_technols_by_pflo)
+
+        """ Populate the 'fop', 'genshape_index' columns within the DataFrame of generators. """
+        for _label_gen_tech in _l_gen_technols_by_pflo:  # Iterate thru technology types contained within portfolio
+            _key = _label_gen_tech.lower()
+            """ Assign appropriate FOP rate to each generator instance, according to its technology type. """
+            if _key in d_fops_by_asset_family:
+                _df_pflo.loc[_df_pflo.loc[(_df_pflo.subgroup_eid == 
+                                           subgroup_fields[_label_gen_tech].value)].index, 
+                                          'fop'] = d_fops_by_asset_family[_key] 
+            """ Populate the 'genshape_index' column within the DataFrame of generators """
+            if _key in d_genshape_assignment_by_asset_family:
+                # logs.critical("Hello_01:\t%s / %s / %s" % (_key, d_genshape_assignment_by_asset_family[_key], df_generator_shapes.index.values))
+                if d_genshape_assignment_by_asset_family[_key] in df_generator_shapes.index.values:  # Has a shape of this index been created within the DataFrame of generator shapes?
+                    # logs.critical("Hello_02:\t%s/%s" % (d_genshape_assignment_by_asset_family[_key], df_generator_shapes.index.values))  
+                    _df_pflo.loc[_df_pflo.loc[(_df_pflo.subgroup_eid == 
+                                               subgroup_fields[_label_gen_tech].value)].index, 
+                                              'genshape_index'] = d_genshape_assignment_by_asset_family[_key]  #.astype(_df_pflo.dtypes['genshape_index'])
+            """ Earmark elements of energy storage. """
+            if _key == 'storage':  
+                _df_pflo.loc[_df_pflo.loc[(_df_pflo.subgroup_eid == 
+                                           subgroup_fields[_label_gen_tech].value)].index, 
+                                          'is_storage'] = True
+
+    # See Ln 1279 in `AdcalV4.10.Module1`
+    """ Variables list (from VBA) 
+        - `UCapVar` is the rated capacity of a generator (as read from the main generation worksheet, `GenA`)
+        - `UCapB` is initialised as == UCapVar (appears to be linked to resolution of generators that have Forced Outage states > 2)
+        - `TCap` is total capacity of the system (which must be < Max. Capacity).
+        - `FOP` is (nominally) the FOP for the 2-state outage model, as read from the main generation worksheet, `GenA` <- We should hope to process each generator by `subgroup_eid` and designate the FOP accordingly
+        - `NStat` is no. of outage states
+        - `UCapI` is a 2-state list of MW states of availability (0, UCapB) that a generator can reside in, any one tme.
+        - `UProb` is a 2-state list of probabilities of availability status (FOP, 1-FOP) that a generator can reside in, any one tme. i.e. there is a probability of 1 - FOP that the full MW rating of the Gen will be available.
+    """
+    # Build Generator Probability Distribution for each generator in turn  # `Case FOCode = 0`
+    # logs.critical("%s\n" % t_df_generator_portfolios[0].Name)
+    logs.debug("Generator Names:\t%s\n" % t_df_generator_portfolios[0].index.values)
+    
+    # Default case is for a 2-state model, i.e. FOCode == 0
+    _cnt_fo_states = 2
+    """  VBA CODE SNIPPET (Ln 1279, of `AdcalV4.10.Module1.ReadGen()`)
+    'Build gen prob distribution for this unit (UCapI and UProb for each state)
+    Select Case FOCode = 0
+        Case True '2-state unit, with FOP as read from col 3.
+            NStat(UCount) = 2
+            UCapI(0, UCount) = 0
+            UCapI(1, UCount) = UCapB(UCount)
+            UProb(0, UCount) = 1 - UProbSimp 'Unit FOP
+            UProb(1, UCount) = UProbSimp
+        Case Else 'General case, multi-state unit, FOPs found from FOCode
+            ...
+    End Select """
+    
+    # New fields for the DF ... `IsPS`, `GeneratorShapeIndex`
+
+    """  VBA CODE SNIPPET (Ln 1366, of `AdcalV4.10.Module1.ReadGen()`)
+    'Read and process PS and GenShape Flags 
+    """
+    # PS flags (as per `df_storage_attrs`) can be ignored until we begin looking at these in the portfolio
+    # Gen Shape No has been processed  above
+
+
+    """  VBA CODE SNIPPET (Ln 1417, of `AdcalV4.10.Module1.ReadGen()`)
+    'Read SO data
+    'Reading and checking of the four SO weeks are done in Function ReadSOWeek
+    'Checks for permitted relationships between weeks are done in Sub CheckSOWeeks
+
+    ... Ln 1447 ...
+    CapNow = UCapB(UCount)
+    FOSimp = 1# - UProbSimp 'The hash symbol is a type declaration character for Double.
+                            'Put in automatically by VBA for any whole number constant
+                            'that needs to be Double.
+    SOD1 = Fin1(UCount) - Start1(UCount)
+    SOD2 = Fin2(UCount) - Start2(UCount)
+    SODNow = SOD1 + SOD2 'Total SOD requirement for this unit
+    SOD(UCount) = SODNow 'Save for use in Maint
+
+    """
+    # Scheduled Outage Duration (SOD):  Finish Week - Start Week ... take this from MaintenanceSupervisor object
+    # SOD is computed across the 2+ windows ...
+
+    # ^ Process Scheduled Outage data ... not critical just now ...
+
+    """ ShapeAdjust WeekTotCap, CapNow, 1, 52 """  # A Sub in `AdcalV4.10.Module3`
+    # Accumulate Weekly Capacity Totals, adjusted for GenShapes (as applicable) ...
+    # Shape Value * Nameplate Cap. for every week of the year ... 
+

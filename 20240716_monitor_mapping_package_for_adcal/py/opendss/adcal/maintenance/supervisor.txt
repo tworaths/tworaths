@@ -1,0 +1,166 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal
+import pandas as pd
+import numpy as np
+import logging as logs
+from enum import IntEnum
+
+# local modules
+# from .asset_map_by_subentity import MonitorMappingOfAssetFamilyBySubentity, types_of_subgroup_entity, types_of_subregion_entity  
+from opendss.monitor_mapping import MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase
+from .schedule import MaintenanceScheduleInstance as MaintSchedItem, WEEKS_PER_YEAR
+
+
+class MaintenanceSupervisor(MaintSchedItem):
+    def __init__(
+            self, 
+            dl_submap_of_maintenance_params_by_monitor: Dict[str, List]=None,  # dl_monitor_submap_of_maintenance
+            o_subgroup_of_generator_monitors: Union[MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase] = None,  # e.g. the `market_dispatchables` subgroup of Generators. 
+            lt_syswide_maintenance_embargoes: Optional[List[Tuple[Union[int, None], Union[int, None]]]] = None):  
+        # df_persistent_monitor_table: pd.DataFrame = None,
+        """
+        Keyword Args:
+            dl_submap_of_maintenance_params_by_monitor(Dict[str, List]): 
+                - A dict of monitor instance aligned lists of maintenance windows, keyed by Monitor name. 
+                - Structure is of the form: 
+                  > {'Monitor.ocgt__ni__b31': [ [ (int, int), (int, int) ], 
+                                                Union[int, None], 
+                                                Union[int, None] ], 
+                  > Element [0] is the list of maintenance windows. Each tuple-pair therein denotes the start- and end- weeks of a particular maintenance period. 
+                  > Element [1] is the week of arrival (defaults to `None`)
+                  > Element [2] is the week of retirement (defaults to `None`)
+
+            df_persistent_monitor_table(pd.DataFrame):
+                - The parent DataFrame of Monitor data, pertaining to the top-level container of all Monitor instances, 
+                  as encompassed within a `MonitorMappingOfCircuitByAssetFamily` instance. 
+
+            lt_syswide_maintenance_embargoes(Optional[List[Tuple[Union[int, None], Union[int, None]]]]):
+                - Option to forbid maintenance occurring during certain weeks of the year.
+                - Applied globally (as an override) across all monitors. 
+                - Structure is of the form: [ (int, int), (int, int) ]
+        """
+        # logs.debug("index terms:\t%s" % o_subgroup_of_generator_monitors.df_mapped_monitor_table.index.values)
+
+        """ 1. Add/initialise a new field/index label, that denotes the scheduled maintenance behaviour. """
+        for _sched_label in ['sched_maint_index', 'sched_maint_start_wk', 'sched_maint_end_wk']:
+            if _sched_label not in o_subgroup_of_generator_monitors.df_mapped_monitor_table.index.values:
+                # New index is added by seeking to assign to index at the end of the existing DataFrame instance
+                _n = len(o_subgroup_of_generator_monitors.df_mapped_monitor_table.index)
+                
+                # Add new index via `pd.concat`, so that dtypes of the columns are preserved
+                (o_subgroup_of_generator_monitors.df_mapped_monitor_table
+                 ) = pd.concat([o_subgroup_of_generator_monitors.df_mapped_monitor_table, 
+                                pd.DataFrame({_c: 0 for _c in o_subgroup_of_generator_monitors.df_mapped_monitor_table.columns.values}, 
+                                             [_n], dtype='i4')])
+
+                # Rename the new member of the index that has been created
+                o_subgroup_of_generator_monitors.df_mapped_monitor_table.rename(index={_n: _sched_label}, inplace=True)
+
+        logs.debug("persistent_dataframe:\n%s\n\n" % 
+                   o_subgroup_of_generator_monitors.df_mapped_monitor_table)
+
+        self.l_schedule_objs = [None]  # Initial object is a None, to denote all generators with a default `sched_maint_index` of 0
+        self.l_monitor_names_by_maintenance_schedule = None
+        [self.add_maintenance_schedule(
+            _mon_key, 
+            o_subgroup_of_generator_monitors.df_mapped_monitor_table, 
+            MaintSchedItem(*_lv)) 
+         for _j, (_mon_key, _lv
+                  ) in enumerate(dl_submap_of_maintenance_params_by_monitor.items())]
+
+        if lt_syswide_maintenance_embargoes is not None:
+            self.enforce_syswide_maintenance_embargoes(lt_syswide_maintenance_embargoes)
+
+        # for _ in self.get_collection_of_maintenance_schedules()[1:]:
+        #     logs.critical("%s\n" % _.__dict__)
+
+
+    def get_collection_of_maintenance_schedules(self) -> List:
+        return self.l_schedule_objs
+
+    def get_maintenance_schedule(self, 
+                                 idx: int=0) -> MaintSchedItem:
+        return self.l_schedule_objs[int(idx)]
+
+    def add_maintenance_schedule(  # create_maintenance_schedule
+            self, 
+            monitor_name: str=None, 
+            df_persistent_monitor_table: pd.DataFrame = None,
+            o_msi: MaintSchedItem=None):
+        """
+        Keyword Args:
+            monitor_name(str):
+            df_persistent_monitor_table(pd.DataFrame):
+                - The parent DataFrame of Monitor data, pertaining to the top-level container of all Monitor 
+                  instances, as encompassed within a `MonitorMappingOfCircuitByAssetFamily` instance. 
+            o_msi(schedule.MaintenanceScheduleInstance):
+                - Object that is to be added to the Parent object, as its child. 
+                    > Comprises `lt_maintenance_window_pairs`, `wk_of_arrival` and `wk_of_retirement` properties. """
+        
+        _l_x = getattr(self, 'get_collection_of_maintenance_schedules')()
+        """ Check for duplication between newly introduced, `MaintSchedItem` obj and each of the previously declared objects. """
+        _b_schedule_duplication = False
+        _idx_active_sched_obj = len(_l_x) - 1
+        if len(_l_x) > 1:  # Initial scheduling object is always `None`, so omit from list
+            _np_masks = self.construct_matrix_of_weekly_masks(_l_x[1:])
+            for _j in range(_np_masks.shape[0]):
+                (_b_schedule_duplication  # Compare weekly mask of the proposed appendage with any previous MSIs, to check for duplication
+                 ) = np.array_equal(_np_masks[_j, :], 
+                                    o_msi.get_weekly_mask())
+                if _b_schedule_duplication:
+                    # logs.debug("Matching schedule object found, index=%i" % _j)
+                    _idx_active_sched_obj = _j + 1
+                    break
+            
+        """ Add the latest `MaintSchedItem` object to the retained list of schedules (if not a duplication). """
+        if not _b_schedule_duplication:
+            setattr(self, "l_schedule_objs", _l_x + [o_msi]) 
+            _idx_active_sched_obj += 1
+
+        """ Update schedule index of the persistent data-table, for the monitor of interest, 
+            to point to the appropriate `MaintSchedItem` object that is contained within the `*_collection_of_maintenance_schedules`. """
+        df_persistent_monitor_table.at['sched_maint_index', monitor_name] = _idx_active_sched_obj + 0  # One-indexed
+
+    @staticmethod
+    def construct_matrix_of_weekly_masks(
+            l_schedule_objs: List[MaintSchedItem]=None) -> np.ndarray:  
+        """ 
+        Concatenates all of the weekly masks, obtained from an incoming list of scheduling objects, 
+        within a consolidated, 2-D array. Array is reshaped such that each row pertains to the 
+        `WEEKS_PER_YEAR` length, sub-array/weekly mask of an individual `MaintenanceScheduleInstance` obj.
+
+        Keyword Args:
+            l_schedule_objs(List[MaintSchedItem]): List of `MaintenanceScheduleInstance` objects.
+        """
+        # logs.critical("l_schedule_objs:\t%s" % l_schedule_objs)
+        return np.array([_o_msi.get_weekly_mask() for _o_msi in l_schedule_objs]
+                        ).reshape(len(l_schedule_objs), WEEKS_PER_YEAR)
+
+    def enforce_syswide_maintenance_embargoes(self, lt_embargoed_window_pairs):
+        _l_x = getattr(self, 'get_collection_of_maintenance_schedules')()
+        # if len(_l_x) > 1:  # Initial scheduling object is always `None`, so omit from list
+        #    _l_x.pop(0)
+        if len(_l_x) > 1:  # Initial scheduling object is always `None`, so omit from list
+            for _j, _x in enumerate(_l_x[1:], start=1):  # overwrite weekly masks of each Schedule object
+                _b_msi_modified = False
+                for _wk_start, _wk_end in lt_embargoed_window_pairs: 
+                    if not any([_wk_start is None, _wk_end is None]):
+                        for _idx_wk in list(range(_wk_start-1, _wk_end)):
+                            if _x.get_weekly_mask(_idx_wk) is not None:  # `None` denotes an arriving/retiring unit
+                                _b_msi_modified = True
+                                _x.set_weekly_mask([False], [_idx_wk])  # i.e. the scheduling of maintenance on this week has been embargoed
+
+                if _b_msi_modified == True:  # Replace the weekly mask of the stored object
+                    self.get_maintenance_schedule(_j).set_weekly_mask( _x.get_weekly_mask() )
+    
+    def assert_existing_maintenance_schedule(
+            self, 
+            monitor_name: str=None, 
+            df_persistent_monitor_table: pd.DataFrame = None,
+            idx_of_maintenance_schedule_for_replication: int=None) -> MaintSchedItem:
+        pass
+
+    def update_existing_maintenance_schedule(
+            self, 
+            idx_of_maintenance_schedule: int=None) -> None:
+        pass
+

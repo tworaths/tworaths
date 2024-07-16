@@ -1,0 +1,46 @@
+{"dss": 
+    {"executable": 
+        {"path_by_user": ["C:\\", "Program Files", "OpenDSS"], 
+         "subpath_common": ["x64"], 
+         "dll": "OpenDSSengine.dll", 
+         "rebuild_com_client": "True"}, 
+     "models": 
+        {"subpath_common": ["models", "circuit", "opendss", "1ph"], 
+         "circuit": "Master.Adequacy.DSS", 
+         "temporary": ["config", "tmp_oDSS.txt"]}, 
+     "simulation_settings": 
+        {"VSourceBaseKv": 40, 
+         "DxTxTapWdg": 1, 
+         "SolveMode": "Daily", 
+         "LoadShapeDynamics": 
+            {"vh": "False", 
+             "nominal_ih": "False", 
+             "ZIPV": 
+                {"PQ": "False", 
+                 "ih": "False"}}}}, 
+ 
+ "ms": 
+    {"subpath_common": ["results"], 
+     "daily": ["_daily"]}, 
+ 
+ "reporting_config": 
+    {"IntegerEncodingForComplexPhasors": "False", 
+     "TotaliseElementFlows": "True", 
+     "AmpsByLine": "False", 
+     "IncludeNeutralFlows": "False", 
+     "SymmetricalComponentsForCurrent": "False", 
+     "VoltsByPhase": "True", 
+     "VoltsByExcursion": "False"},
+
+ "adcal": 
+    {"input_data": 
+        {"producers_map":  
+            {"subpath": ["json"], 
+             "mapfile": "producers_map.json"}, 
+         "load_model": 
+            {"subpath": ["models", "_profiles", "HV"], 
+             "demand_profiles": "TES_2019_AdCal_Profiles_364d_AI.csv"}, 
+             "gen_model": 
+                {"subpath": ["models", "_profiles", "HV"], 
+                 "ambient_temperature_shapes": "Genshapes_for_AdCal.csv"}}}
+}

@@ -1,0 +1,378 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal, Type
+from numbers import Number
+import abc
+import pandas as pd
+import numpy as np
+import re
+import logging as logs
+from enum import IntEnum
+
+# local modules
+from .subentity_typing_enum import subentity_typing
+from .subentity_pairing_enum import mapping_params
+
+
+class SubentityForMonitoringBase(object):  #  (JSONEncoder):  # 
+    """ Base class of common `MonitorMapping*` classes. 
+    - Does not include references to the OpenDSS client. 
+    - As such, this layer is purely Pythonic and agnostic with respect to API wrappers for dedicated load flow applications. """
+    # __slots__ = ('df_mapped_monitor_table', )
+    __attr_names = ('df_mapped_monitor_table', )
+    def __init__(self, 
+                 l_mapped_monitors: List=None,
+                 df_persistent_monitor_table: Optional[pd.DataFrame] = None, 
+                 **kwargs: Optional[Dict]): 
+        # Convert l_mapped_monitors into a DataFrame:
+        """
+        df_mapped_monitors = pd.DataFrame(pd_data, columns=l_mapped_monitors, index=l_fields)
+        df_mapped_monitors[l_mapped_monitors[0]] ... returns a column
+        df_mapped_monitors.iloc[1] ... returns a row
+        df_mapped_monitors.loc[l_fields[0]] ... returns a row, by its name ... """
+        super().__init__(**kwargs)  # <- forwards unused arguments to next class in the Method Resolution Order (MRO) chain for multiple inheritance
+
+        if l_mapped_monitors is None:
+            l_mapped_monitors = list()
+        
+        if any([df_persistent_monitor_table is None, 
+                len(l_mapped_monitors) == 0]):  # No persistence - creating a new datatable
+            l_unique_ids = list(range(1, len(l_mapped_monitors) + 1))
+            l_merit_order = l_unique_ids.copy()
+            # Subentity ID is the Enumerated value assigned to e.g. Generator type: OCGT, ST, ICXDC etc. Initialised to 0 (i.e. NULL/Un-assigned)
+            _lt_fields = [('unique_id', 'i2'),   # fields with name, dtype pairings
+                          ('merit_order', 'i2'), 
+                          ('loadshape_index', 'i2'), 
+                          ('subgroup_eid', 'i1'),
+                          ('subregion_eid', 'i1')]  
+            # Create a multi-field table of monitor data pertaining to the Asset Family/Subentity of interest
+            data_table = np.zeros((len(_lt_fields), len(l_mapped_monitors)), dtype='i4')  
+            (self.df_mapped_monitor_table
+             ) = pd.DataFrame(data_table, 
+                              columns=l_mapped_monitors, 
+                              index=[_[0] for _ in _lt_fields])
+            for _t in _lt_fields: # Apply dtypes manually thereafter
+                self.df_mapped_monitor_table.loc[_t[0]] = self.df_mapped_monitor_table.loc[_t[0]].astype(_t[1])  
+            logs.debug("\'self.df_mapped_monitor_table.dtypes\':\t%s", [_v for _k, _v in self.df_mapped_monitor_table.dtypes.items()]) 
+
+            self.df_mapped_monitor_table.loc['unique_id'] = np.array(l_unique_ids)  # , dtype=np.int16)   # to remain fixed
+            self.df_mapped_monitor_table.loc['merit_order'] = np.array(l_merit_order)  # , dtype=np.int16)  # can be randomised as part of Monte Carlo analysis
+        else:
+            self.df_mapped_monitor_table = df_persistent_monitor_table.loc[:, l_mapped_monitors]
+
+        # logs.critical(getattr(self, '__slots__', None))  # Check for __slots__
+        # logs.critical(getattr(self, '__dict__', None))  # Check for __dict__
+        logs.critical("Hello from \'__init__\' of the \'SubentityForMonitoringBase\' sub-class, " + 
+                      "called by the \'%s\' class ...\n" % self.__class__)
+
+
+    def __copy__(self):
+        return type(self)(self.get_collection_of_mapped_monitors(), self.get_datatable(b_as_a_copy=True))
+    
+    def get_collection_of_mapped_monitors(self, 
+                                          b_by_merit_order: Optional[bool] = False) -> List: 
+        l_col_names = self.df_mapped_monitor_table.columns.tolist()
+        logs.debug("%s" % self.df_mapped_monitor_table.loc['merit_order'].values)
+
+        if not b_by_merit_order:  # default
+            return l_col_names
+        else:  # Return columns by rearranged Merit Order
+            return [_b for _a, _b in 
+                    sorted(zip(self.df_mapped_monitor_table.loc['merit_order'].values, 
+                               l_col_names), 
+                           key = lambda t_info_by_monitor_instance: t_info_by_monitor_instance[0])]
+    
+    def get_datatable(self, 
+                      b_as_a_copy: Optional[Union[Literal[True], Literal[False]]] = False) -> pd.DataFrame: 
+        if not b_as_a_copy:  # Default
+            return self.df_mapped_monitor_table  # Any amendments are retained within source object
+        else:
+            return self.df_mapped_monitor_table.copy()
+
+    def refresh_datatable_from_source(self,
+                                      df_refreshed_monitor_table: pd.DataFrame = None):
+        l_legacy_mapped_monitors = self.get_collection_of_mapped_monitors()
+        setattr(self, 'df_mapped_monitor_table', 
+                df_refreshed_monitor_table.loc[:, l_legacy_mapped_monitors])
+
+    @staticmethod
+    def get_attr_names() -> Tuple:
+        """ A proxy for __slots__ """
+        return SubentityForMonitoringBase.__attr_names
+
+    @staticmethod
+    def resolve_amalgamated_list_of_monitor_names(
+            l_subentities: List[object],  
+            e_style_of_combination: IntEnum = mapping_params.INTERSECTION_OF_MAPS,
+        ) -> List:
+        """ Description ... faciltates flexibility across multiple class types ...
+
+        Keyword Args:
+            l_subentities(List[object]):
+                - List of `cls` instances that are to be combined. 
+            e_style_of_combination(enum.IntEnum):
+                - Manner of amalgamation, specified by pre-defined enumeration (within the `mapping_params` class):
+                - Options are: 
+                  > `INTERSECTION_OF_MAPS` (i.e. chooses those monitors that are present within ALL of the input sets.
+                  > `UNION_OF_MAPS` (i.e. chooses those monitors that are present within ANY of the input sets, removing duplicates).
+                  > `EXCLUSIVE_DISJUNCTION_OF_MAPS` (chooses only those monitors that are present in either of the input sets, not both). 
+        Returns:
+            List: Of amalgamated list of names from each of the incoming subentity instances. """
+        _ll_mapped_monitor_collections = list()
+        [_ll_mapped_monitor_collections.append(_o_subentity.get_collection_of_mapped_monitors()) 
+         for _o_subentity in l_subentities]
+        # logs.critical("Nested list of constituent subgroups:\t%s" % _ll_mapped_monitor_collections)
+        
+        (l_amalgamated_mapped_monitor_collection, _l_intersection_of_maps, _l_union_of_maps
+         )  = (list(), list(), list())
+        for _l_x, _l_y in zip(_ll_mapped_monitor_collections[:-1], _ll_mapped_monitor_collections[1:]): 
+            _l_intersection_of_maps.extend([_ for _ in _l_x if _ in _l_y])
+            _l_union_of_maps.extend(_l_x)
+            _l_union_of_maps.extend([_ for _ in _l_y if _ not in _l_x])
+
+        if e_style_of_combination.value == mapping_params.INTERSECTION_OF_MAPS.value:
+            l_amalgamated_mapped_monitor_collection.extend(_l_intersection_of_maps)
+        elif e_style_of_combination.value == mapping_params.UNION_OF_MAPS.value:
+            l_amalgamated_mapped_monitor_collection.extend(_l_union_of_maps)
+        elif e_style_of_combination.value == mapping_params.EXCLUSIVE_DISJUNCTION_OF_MAPS.value:
+            l_amalgamated_mapped_monitor_collection.extend(_l_union_of_maps)
+            [l_amalgamated_mapped_monitor_collection.remove(_) for _ in _l_intersection_of_maps]
+
+        return l_amalgamated_mapped_monitor_collection
+
+    @abc.abstractmethod
+    def amalgamate_subentity_delineated_collections_of_monitors() -> None:
+        # Placeholder for method that should be over-ridden within the inheriting class
+        pass
+
+    @classmethod
+    def amalgamate_collections_of_monitors(
+            cls: Type,
+            l_subentities: List[object],  
+            e_style_of_combination: IntEnum = mapping_params.INTERSECTION_OF_MAPS,
+            df_persistent_monitor_table: Optional[pd.DataFrame] = None, 
+            b_skip_subentity_class_comparison: Optional[Union[Literal[True], Literal[False]]] = False
+        ) -> object:  
+        """ Create a new `SubentityForMonitoringBase` that combines the details of constituent `SubentityForMonitoringBase` instances.
+        
+        This is written as a `classmethod` ...
+        - As such, through the use of this method, the containing class can effectively spawn new instances of itself. 
+        - Moreover, the method can also be invoked by inheriting classes, elsewhere in the hierarchy. 
+        
+        Keyword Args:
+            cls(Type): 
+                First argument of a classmethod is always the calling class.
+            l_subentities(List[object]):
+                - List of `cls` instances that are to be combined. 
+                - Must check that these instances are of the same class as that which is calling the method.
+            e_style_of_combination(enum.IntEnum):
+                - Manner of amalgamation, specified by pre-defined enumeration (within the `mapping_params` class):
+                - Options are: 
+                  > `INTERSECTION_OF_MAPS` (i.e. chooses those monitors that are present within ALL of the input sets.
+                  > `UNION_OF_MAPS` (i.e. chooses those monitors that are present within ANY of the input sets, removing duplicates).
+                  > `EXCLUSIVE_DISJUNCTION_OF_MAPS` (chooses only those monitors that are present in either of the input sets, not both). 
+            df_persistent_monitor_table(Optional[pd.DataFrame]):
+                - The parent DataFrame of Monitor data, pertaining to the top-level container of all Monitor instances, 
+                  as encompassed within a `MonitorMappingOfCircuitByAssetFamily` instance. 
+                - If `None` is passed as the arg, a new datatable is generated within the constructor of the returned 
+                  `SubentityForMonitoringBase` instance.
+            b_skip_subentity_class_comparison(Optional[bool]):
+                - Force the method to not raise a TypeError if inconsistent classes are compared. 
+
+        Returns:
+            subentity.SubentityForMonitoringBase: 
+                An amalgamated collection of Monitors, taken from 2 or more input Subentity instances. """
+        if not b_skip_subentity_class_comparison:
+            for _o_subentity in l_subentities:  # Check the types of the input arguments
+                if not _o_subentity.__class__.__name__ == cls.__name__:
+                    raise TypeError(("All instances contained within the \'l_subentities\' argument set, " + 
+                                     "should be of the same type as the calling class: {0} != {1}."
+                                     ).format(_o_subentity.__class__.__name__, cls.__name__))
+        # Get amalgamated list of monitors ... 
+        (_l_amalgamated_mapped_monitor_collection
+         ) = cls.resolve_amalgamated_list_of_monitor_names(l_subentities, e_style_of_combination)
+        # feed list of monitors into a new `cls` instance (with associated datatable)
+        obj = cls.__new__(cls)
+        obj.__init__(_l_amalgamated_mapped_monitor_collection, df_persistent_monitor_table)
+        
+        return obj
+    
+    def get_collection_of_unique_ids_by_mapped_monitor(self) -> List:  
+        return self.df_mapped_monitor_table.loc['unique_id']  # Return a row from the DataFrame, by its name 
+
+    def get_collection_of_merit_orders_by_mapped_monitor(self) -> List:  
+        return self.df_mapped_monitor_table.loc['merit_order']  # Return a row from the DataFrame, by its name 
+
+    def get_monitor_count(self) -> Union[int, None]:  
+        return len(self.get_collection_of_mapped_monitors())
+
+    def add_new_child_map(self, 
+                          new_child_label: str=None,
+                          o_new_child: object=None,
+                          new_child_type_as_str: str=None) -> None: 
+        """ Create a new asset_family or subentity instance, from which monitors can be categorized. """ 
+        # Add child to the namespace of the parental object: calling class dependent ...
+        if self.__class__.__name__ == 'MonitorMappingOfCircuitByAssetFamily':
+            if new_child_type_as_str is None:
+                new_child_type_as_str = 'asset_family'
+            
+            self.__dict__.update({new_child_label: o_new_child})  
+
+        elif any([self.__class__.__name__ == 'MonitorMappingOfAssetFamilyBySubentity', 
+                  self.__class__.__name__ == 'MonitorMappingOfAssetFamilyBase']):
+            if not subentity_typing.has_name(new_child_type_as_str.upper()):
+                raise AttributeError(("\'{0}\' type not listed among accepted \'{1}\' types: {2}"
+                                      ).format(new_child_type_as_str.upper(), 
+                                               subentity_typing.__name__, 
+                                               subentity_typing.get_names()))
+            if new_child_type_as_str is None:
+                raise ValueError(("\'new_child_type_as_str\' must be defined, when adding to \'{0}\' objects. Should be one of: {1}."
+                                  ).format(self.__class__.__name__, subentity_typing.get_names()))
+            try:
+                self.__dict__["%ss" % new_child_type_as_str].update({new_child_label: o_new_child}) 
+            except KeyError:  # subentity field is retained in __slots__ rather than __dict___ ... 
+                if "%ss" % new_child_type_as_str in self.__slots__:  # slots is a tuple ...
+                    _d_subentity_map = getattr(self, "%ss" % new_child_type_as_str)  # extract the sub-object pertaining to subgroup, subregions etc
+                    _d_subentity_map.update({new_child_label: o_new_child})
+                    setattr(self, "%ss" % new_child_type_as_str, _d_subentity_map)
+        
+        # Update the list of child types that are present within the parental object
+        _l_child_labels = getattr(self, "get_collection_of_%s_labels" % new_child_type_as_str)()
+        if new_child_label not in _l_child_labels:  # Check name mapping
+            setattr(self, "l_%s_labels" % new_child_type_as_str, _l_child_labels + [new_child_label]) 
+    
+    def shuffle_merit_order(self, 
+                            seed: Optional[int] = None) -> None:
+        """ In-place, randomised shuffle of a named row ...
+        
+        Keyword Args:
+            seed(Optional[int]):
+                - A seed can be used to create a reproducible randomisation. 
+                - If left unset, the permutation is completely random.
+                - See: https://stackoverflow.com/questions/47742622/np-random-permutation-with-seed>
+
+        Returns:
+            None: All actions are enacted in-place """
+
+        """ Example usage: 
+            > In-place, randomised shuffle of a named row ...
+            >> np.random.shuffle(df_mapped_monitor_table.loc['merit_order'].values) 
+            
+            > Pick columns by rearranged Merit Order:
+            _l_x = [df_mapped_monitor_table[_].merit_order for _ in df_mapped_monitor_table.columns]
+            for _a, _b in sorted(zip(_l_x, df_mapped_monitor_table.columns), key = lambda x: x[0]): ... """
+
+        # np.random.shuffle(self.df_mapped_monitor_table.loc['merit_order'].values)
+        if seed is not None:
+            np.random.seed(seed)
+        (self.df_mapped_monitor_table.loc['merit_order']
+         ) = np.random.permutation(self.df_mapped_monitor_table.loc['merit_order'].values).astype('i4')
+    
+    @classmethod
+    def serialize_to_json(cls: Type,
+                          obj_as_copy: object=None, 
+                          d_child_properties_for_conversion: Optional[Dict[str, Type]] = None) -> str:
+        """ For safety: Only send a copy of the source object to this method, not the original object. """
+        import json
+        if d_child_properties_for_conversion is None:  # As per `subentity_conduit.convert_to_base()` ...
+            d_child_properties_for_conversion = dict()
+            if obj_as_copy.__class__.__name__ == 'MonitorMappingOfAssetFamilyBase':
+                d_child_properties_for_conversion.update(obj_as_copy.__class__.get_base_converted_child_properties())
+        
+        _l_attrs_for_mapping = list()
+        _l_slots_for_mapping = list(getattr(cls, '__slots__', tuple()))  # print slots
+        for _k in _l_slots_for_mapping:
+            _o_child = getattr(obj_as_copy, _k, None)
+            logs.critical("%s:\t%s (scalar=%s)" % (_k, _o_child, isinstance(_o_child, (str, Number))))
+            
+            if _k in d_child_properties_for_conversion:  # Make a recursive call to objects within child fields ...
+                if d_child_properties_for_conversion[_k]._name == Dict._name:
+                    _d_map_of_subentities = getattr(obj_as_copy, _k).copy()  # Grabbing the entire `subgroup` (or `subregion`) field
+                    _d_map_of_subentities_for_serialization = dict()
+                    _d_map_of_subentities_for_serialization.update({  # Convert each `subgroup` (or `subregion`) instance
+                        _kk:  # sub-key for the `subgroup` (or `subregion`) field, e.g. `ie` as a constituent sub-region
+                        [d_child_properties_for_conversion[_k].__args__[1].__name__, 
+                         _d_map_of_subentities[_kk].get_collection_of_mapped_monitors()]
+                        for _kk in _d_map_of_subentities})   
+                    
+                    _slot_name_for_serialization = "%s_as_json" % _k
+                    setattr(obj_as_copy, _slot_name_for_serialization, _d_map_of_subentities_for_serialization)
+                    delattr(obj_as_copy, _k)  # remove original entire `subgroup` (or `subregion`) field from the copied source object
+                    _l_attrs_for_mapping.append(_slot_name_for_serialization)
+
+                elif d_child_properties_for_conversion[_k]._name == List._name:
+                    _l_attrs_for_mapping.append(_k)
+
+        # Finalise with the __dict__ terms here ...
+        # datatable needs to be converted to JSON
+        _attr_name_for_datatable = obj_as_copy.get_attr_names()[0]
+        _attr_name_for_serialized_datatable = "%s_as_json" % _attr_name_for_datatable
+        setattr(obj_as_copy, 
+                _attr_name_for_serialized_datatable, 
+                json.loads(obj_as_copy.get_datatable().to_json(orient='index')))
+        delattr(obj_as_copy, 
+                _attr_name_for_datatable)  # remove DataFrame from the copied source object
+        _l_attrs_for_mapping.append(_attr_name_for_serialized_datatable)
+        
+        # Now the entire object can be serialized
+        return json.dumps({_k: getattr(obj_as_copy, _k, None) 
+                           for _k in _l_attrs_for_mapping}, indent=4)
+
+    @classmethod
+    def deserialize_from_json(cls: Type,
+                              obj_map_as_json: Union[str, Dict]=None, 
+                              d_child_properties_for_conversion: Optional[Dict[str, Type]] = None) -> object:
+        """ Write stuff here ... """ 
+        import json
+        d_child_properties_for_conversion = dict()  # As per `subentity_conduit.convert_to_base()` ...
+        if cls.__name__ == 'MonitorMappingOfAssetFamilyBase':
+            d_child_properties_for_conversion.update(cls.get_base_converted_child_properties())
+       
+        if isinstance(obj_map_as_json, str):
+            d_obj_map_top_level = json.loads(obj_map_as_json)  # convert JSON string into a dict
+        elif isinstance(obj_map_as_json, Dict):
+            d_obj_map_top_level = obj_map_as_json
+        logs.critical(d_obj_map_top_level.keys())
+
+        obj_recovered = object.__new__(cls)  # Create a new, empty `base class` instance (without associated datatable)
+        _attr_name_for_recovered_datatable = obj_recovered.get_attr_names()[0]
+        _attr_name_for_serialized_datatable = "%s_as_json" % _attr_name_for_recovered_datatable
+        
+        # Recover the top-level DataFrame
+        from io import StringIO
+        """ pd.set_option("display.max_rows", None) 
+        pd.set_option("display.max_columns", None) """
+        if isinstance(d_obj_map_top_level[_attr_name_for_serialized_datatable], str):
+            (_df_recovered_master  
+             ) = pd.read_json(
+                     StringIO(d_obj_map_top_level[_attr_name_for_serialized_datatable]), 
+                     orient='index')  
+        elif isinstance(d_obj_map_top_level[_attr_name_for_serialized_datatable], Dict):
+            (_df_recovered_master  
+             ) = pd.read_json(
+                     StringIO(json.dumps(d_obj_map_top_level[_attr_name_for_serialized_datatable])), 
+                     orient='index')  
+        
+        obj_recovered.__init__(_df_recovered_master.columns.tolist(), 
+                               _df_recovered_master)  # initialise base object with the recovered, persisted DF
+        
+        # logs.critical(dir(obj_recovered))
+        logs.critical(obj_recovered.get_datatable())
+        
+        # Now process the slots ...
+        _l_slots_for_mapping = list(getattr(cls, '__slots__', tuple()))  # print slots
+        for _k in _l_slots_for_mapping:
+            if _k in d_child_properties_for_conversion:  # Make a recursive call to objects within child fields ...
+                if d_child_properties_for_conversion[_k]._name == Dict._name:
+                    """ JSON format is: [class_type, List of monitor names] """
+                    _d_map_of_subentities = dict()
+                    for _kk, _vv in d_obj_map_top_level["%s_as_json" % _k].items():
+                        # if _vv[0] == 'MonitorMappingOfAssetFamilyBase':
+                        (_cls_subentity, _l_mapped_mons) = (eval(_vv[0]), _vv[1])
+                        _d_map_of_subentities[_kk] = object.__new__(_cls_subentity)  # sub-object
+                        _d_map_of_subentities[_kk].__init__(_l_mapped_mons, obj_recovered.get_datatable())
+                        # logs.critical("\'%s\':\t\'%s\'" % (_k, _cls_subentity))
+                    setattr(obj_recovered, _k, _d_map_of_subentities)
+                elif d_child_properties_for_conversion[_k]._name == List._name:
+                    setattr(obj_recovered, _k, d_obj_map_top_level[_k])
+
+        return obj_recovered
+

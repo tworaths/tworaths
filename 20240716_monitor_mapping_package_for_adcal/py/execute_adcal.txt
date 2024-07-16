@@ -1,0 +1,210 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal
+from numbers import Number
+
+import sys
+import os
+import json
+import numpy as np
+import pandas as pd
+import re
+import logging as logs
+from enum import IntEnum
+
+# local modules
+
+# Monitoring Mapping
+from opendss.monitor_mapping.subentity_typing_enum import subentity_typing
+from opendss.monitor_mapping.subentity_pairing_enum import mapping_params
+from opendss.monitor_mapping.asset_map_by_subentity_base import MonitorMappingOfAssetFamilyBase
+from opendss.monitor_mapping.subentity_base import SubentityForMonitoringBase
+
+# AdCal
+from opendss.adcal import maintenance
+# from opendss.adcal import create_cap
+
+
+# Define filepath to the configuration file for this script
+F_SIM_CFG = os.path.join(os.getcwd(), 'config', 'adequacy.json')
+
+
+# def import_config(filepath_to_config: str=None):
+#     """ Load demo configuration setting from associated .json file. """
+#     with open(filepath_to_config) as _hndl_json: 
+#         d_sim_cfg = json.loads(_hndl_json.read())
+#     
+#     logs.info("%s", import_config.__name__)
+#     
+#     # path to local DLL of OpenDSS executable (to provide access to COM interface)
+#     f_opendss_dll = os.path.join(*(d_sim_cfg['dss']['executable']['path_by_user'] + 
+#                                    d_sim_cfg['dss']['executable']['subpath_common'] + 
+#                                    [d_sim_cfg['dss']['executable']['dll']]))
+#     # path for input circuit file(s)
+#     f_opendss_master = os.path.join(*([os.path.abspath("..\\")] + 
+#                                       d_sim_cfg['dss']['models']['subpath_common'] + 
+#                                       [d_sim_cfg['dss']['models']['circuit']]))
+#     # paths to AdCal CSV files
+#     f_adcal_load_mdl = os.path.join(*([os.path.abspath("..\\..\\")] + 
+#                                       d_sim_cfg['adcal']['input_data']['load_model']['subpath'] + 
+#                                       [d_sim_cfg['adcal']['input_data']['load_model']['demand_profiles']]))
+#     f_adcal_genshapes = os.path.join(*([os.path.abspath("..\\..\\")] + 
+#                                        d_sim_cfg['adcal']['input_data']['gen_model']['subpath'] + 
+#                                        [d_sim_cfg['adcal']['input_data']['gen_model']['ambient_temperature_shapes']]))  # Genshapes_for_AdCal.csv
+# 
+#     # path(s) for simulated results files
+#     pth_csv_root = os.path.join(*([os.path.abspath("..\\")] + 
+#                                   d_sim_cfg['ms']['subpath_common']))
+#     
+#     if d_sim_cfg['dss']['simulation_settings']['SolveMode'] == 'Harmonic':
+#         _ = d_sim_cfg['ms']['harm'][0]
+#     else:  # if d_sim_cfg['dss']['simulation_settings']['SolveMode'] == 'Daily':
+#         _ = d_sim_cfg['ms']['daily'][0]
+#     pth_csv_dump = os.path.join(pth_csv_root, _)
+# 
+#     logs.info("OpenDSS executable:\t %s\n", f_opendss_dll)
+#     logs.info("OpenDSS Master File:\t %s\n", f_opendss_master)
+#     logs.info("CSV file dump:\t %s\n", pth_csv_root) 
+#     
+#     return (f_opendss_master, f_opendss_dll, f_adcal_load_mdl, f_adcal_genshapes, 
+#             pth_csv_root, pth_csv_dump, 
+#             d_sim_cfg['dss']['simulation_settings'], d_sim_cfg['reporting_config'])
+
+
+def import_adcal_files(
+        filepath_to_config: str=None) -> MonitorMappingOfAssetFamilyBase:
+    with open(filepath_to_config) as _hndl_json: 
+        d_sim_cfg = json.loads(_hndl_json.read())
+    
+    logs.info("%s", import_adcal_files.__name__)
+
+    # paths to AdCal CSV files
+    f_adcal_load_mdl = os.path.join(*([os.path.abspath("..\\")] + 
+                                      d_sim_cfg['adcal']['input_data']['load_model']['subpath'] + 
+                                      [d_sim_cfg['adcal']['input_data']['load_model']['demand_profiles']]))
+    f_adcal_genshapes = os.path.join(*([os.path.abspath("..\\")] + 
+                                       d_sim_cfg['adcal']['input_data']['gen_model']['subpath'] + 
+                                       [d_sim_cfg['adcal']['input_data']['gen_model']['ambient_temperature_shapes']]))  # Genshapes_for_AdCal.csv
+
+    return f_adcal_load_mdl, f_adcal_genshapes
+
+
+def import_monitor_map_from_json(
+        filepath_to_config: str=None) -> MonitorMappingOfAssetFamilyBase:
+    with open(filepath_to_config) as _hndl_json: 
+        d_sim_cfg = json.loads(_hndl_json.read())
+
+    # path for initiating the export of the monitor map
+    f_mapfile = os.path.join(*([os.path.abspath("..\\models\\circuit\\")] + 
+                               d_sim_cfg['adcal']['input_data']['producers_map']['subpath'] + 
+                               [d_sim_cfg['adcal']['input_data']['producers_map']['mapfile']]))
+    logs.debug("Path for JSON import:\t %s\n", f_mapfile)
+
+    with open(f_mapfile, 'r') as _hndl_map_json_ip:
+        map_as_dict = json.loads(_hndl_map_json_ip.read())
+    logs.debug("Check that imported content is of the correct format ...\t\'%s\'" % type(map_as_dict))
+
+    # o_producers_map_as_base = MonitorMappingOfAssetFamilyBase.deserialize_from_json(json.loads(map_as_json_str))
+    o_producers_map_as_base = MonitorMappingOfAssetFamilyBase.deserialize_from_json(map_as_dict)
+    
+    logs.debug("%s:\t%s" % (type(o_producers_map_as_base.subgroups['wind_ons']), 
+                            o_producers_map_as_base.subgroups['wind_ons'].get_datatable()))  # get_collection_of_mapped_monitors()))
+    logs.critical("%s:\t%s" % (type(o_producers_map_as_base), 
+                               o_producers_map_as_base.get_datatable()))  # get_collection_of_mapped_monitors()))
+    
+    return o_producers_map_as_base
+
+
+if __name__ == "__main__":
+    # Check for command line args
+    if len(sys.argv) > 1:
+        fname_log = str(sys.argv[1])
+        print("log file name:\t\'", fname_log, "\'")
+    else:
+        fname_log = None  # defaults to reporting via STDOUT handle
+
+    """ See available formatting options here: 
+            https://docs.python.org/3/library/logging.html#logrecord-attributes
+            https://stackoverflow.com/a/28194953
+        Available logging levels: logs.DEBUG, logs.INFO, logs.WARNING, logs.ERROR and logs.CRITICAL """
+    logs.basicConfig(filename=fname_log, filemode='w', level=logs.INFO, 
+                     format='{%(lineno)d/%(filename)s}:\t%(message)s')
+    logs.critical('LOG STARTED\n')
+
+    """ 1. Import/De-serialise monitor map from JSON """ 
+    o_producers_map_as_base = import_monitor_map_from_json(filepath_to_config=F_SIM_CFG)
+
+
+    """ 2. Emulate maintenance scheduling within AdCal """
+    dl_submap_of_maintenance_params_by_monitor = dict()
+   
+    """ 2A. Define a bespoke scheduling arrangement for OCGTs in Northern Ireland (as an example).
+            - Begin by defining a dedicated subgroup ... and adding to the parental map """
+    _x = o_producers_map_as_base.amalgamate_subentity_delineated_collections_of_monitors(
+                 l_subentities=[o_producers_map_as_base.subgroups['ocgt'], 
+                                o_producers_map_as_base.subregions['ni']], 
+                 e_style_of_combination=mapping_params.INTERSECTION_OF_MAPS, 
+                 df_persistent_monitor_table=o_producers_map_as_base.get_datatable())
+    
+    o_producers_map_as_base.add_subentity_child('ocgt__&&__ni', _x, subentity_typing.SUBGROUP)
+
+    logs.critical(o_producers_map_as_base.get_collection_of_subgroup_labels())
+
+    # FROM HERE ...
+    """ 2B. Assign the same maintenance schedules to all OCGTs in Northern Ireland:
+            - Maintenance can occur between wks 1 and 4 (inclusive) of the Capacity Year (CY). 
+            - None of these units are arriving, i.e. New; nor retiring, during this CY. """
+    dl_submap_of_maintenance_params_by_monitor.update({
+        _k: [[(1, 4)], None, None]  
+        for _k in o_producers_map_as_base.subgroups['ocgt__&&__ni'].get_collection_of_mapped_monitors()})
+
+    
+    """ 2C. Add a bespoke schedule for Edenderry Steam - which we will denote as retiring towards the end of the CY (at Wk 40). """
+    # dl_submap_of_maintenance_params_by_monitor['Monitor.st__ie__ed1'] = [[(1, 12), (32, 52)], None, 40]
+    dl_submap_of_maintenance_params_by_monitor['Monitor.ocgt__ie__ed3'] = [[(1, 12), (32, 52)], None, 40]
+    # dl_submap_of_maintenance_params_by_monitor['Monitor.ocgt__ie__pba'] = [[(1, 12), (32, 52)], None, 40]
+    # dl_submap_of_maintenance_params_by_monitor['Monitor.ocgt__ie__wg1'] = [[(1, 12), (32, 52)], None, 40]
+    
+    
+    """ 3. Generate the maintenance map """
+    (o_maint_map
+     ) = maintenance.MaintenanceSupervisor(
+             dl_submap_of_maintenance_params_by_monitor=dl_submap_of_maintenance_params_by_monitor, 
+             o_subgroup_of_generator_monitors=o_producers_map_as_base, 
+             lt_syswide_maintenance_embargoes=[(7, 19-11)])
+
+    # Update the datatables of each subgroup with the scheduled maintenance information
+    [o_producers_map_as_base.subgroups[_].refresh_datatable_from_source(o_producers_map_as_base.get_datatable())
+     for _ in o_producers_map_as_base.get_collection_of_subgroup_labels()]
+    # .. and subregion 
+    [o_producers_map_as_base.subregions[_].refresh_datatable_from_source(o_producers_map_as_base.get_datatable())
+     for _ in o_producers_map_as_base.get_collection_of_subregion_labels()]
+    
+    # Expansion options for Pandas display
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.max_columns', None)
+    logs.critical("type=%s\ncontents:\t%s" % (type(o_producers_map_as_base), o_producers_map_as_base.__dict__))
+    
+    
+    """ 4. Emulation of AdCal ... """
+    from opendss.adcal import create_cap
+    # from opendss.adcal import * 
+
+    f_adcal_load_mdl, f_adcal_genshapes = import_adcal_files(filepath_to_config=F_SIM_CFG)
+
+    create_cap.adcal_main(
+        # o_active_circuit=oDSS.oDSScom.App.ActiveCircuit, 
+        # o_subgroup_of_existing_generator_monitors=oDSS.o_monitors_map.__dict__[PROVIDERS_KEY].subgroups[("market_dispatchables_%s" % 'existing'
+        #                                                                                     )].convert_to_base(SubentityForMonitoringBase, 
+        #                                                                                                        o_active_circuit=oDSS.oDSScom.App.ActiveCircuit),
+        # o_subgroup_of_existing_phes_monitors=oDSS.o_monitors_map.Storage.subgroups[("phes"
+        #                                                                             )].convert_to_base(SubentityForMonitoringBase, 
+        #                                                                                                o_active_circuit=oDSS.oDSScom.App.ActiveCircuit),
+        o_monitors_map=o_producers_map_as_base,
+        o_maint_map=o_maint_map,
+        df_raw_demand_profiles=pd.read_csv(f_adcal_load_mdl),  # , delimiter='\t'),
+        df_raw_generator_shapes=pd.read_csv(f_adcal_genshapes).T,  # transpose to convert columns to indices
+        d_fops_by_asset_family={'ocgt': 0.038, 'st': 0.39, 'icxdc': 0.04, 'rorh': 0.10}, 
+        d_sops_by_asset_family=None,
+        d_genshape_assignment_by_asset_family={'ocgt': 1, 'st': None, 'icxdc': None, 'rorh': None}
+        # demand input args
+    )  # """
+

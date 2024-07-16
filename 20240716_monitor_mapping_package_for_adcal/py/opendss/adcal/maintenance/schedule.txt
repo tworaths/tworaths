@@ -1,0 +1,80 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal
+import numpy as np
+import logging as logs
+
+WEEKS_PER_YEAR = 52
+
+
+class MaintenanceScheduleInstance(object):
+    def __init__(self, 
+                 lt_maintenance_window_pairs: List[Tuple[Union[int, None], Union[int, None]]] = None, 
+                 wk_of_arrival: Optional[int]=None,
+                 wk_of_retirement: Optional[int]=None):
+        """
+        Keyword Args:
+            lt_maintenance_window_pairs(List[Tuple[Union[int, None], Union[int, None]], 
+                                             Tuple[Union[int, None], Union[int, None]]]):
+                - Pairs of maintenance window definitions (start week, end week). Multiple, non-contiguous windows can be defined across the Capacity Year. 
+            wk_of_arrival(Optional[int]): 
+                - Option to signify a generator unit that is new and begins to participate midway through a Capacity Year. 
+                - One-indexed value, i.e. from the list 1, 2, ..., 52.
+            wk_of_retirement(Optional[int]): 
+                - Option to signify a generator unit that is due to retire, imminently, and ceases operations midway through a Capacity Year. 
+                - One-indexed value, i.e. from the list 1, 2, ..., 52.
+        """
+        _l_x = np.full(WEEKS_PER_YEAR, False, np.bool_).tolist()  # initialise
+        if wk_of_arrival is not None:
+            _l_x[:wk_of_arrival] = [None for _ in _l_x[:wk_of_arrival]] 
+        if wk_of_retirement is not None:
+            _l_x[wk_of_retirement-1:] = [None for _ in _l_x[wk_of_retirement-1:]]
+        self.set_weekly_mask(_l_x, None)  
+        
+        for _wk_start, _wk_end in lt_maintenance_window_pairs: 
+            # logs.critical("\'_wk_start\': %i,\t\'_wk_end\': %i" % (_wk_start, _wk_end))
+            if not any([_wk_start is None, _wk_end is None]):
+                for _idx_wk in list(range(_wk_start-1, _wk_end)):
+                    if self.get_weekly_mask(_idx_wk) is not None:  # `None` denotes an arriving/retiring unit
+                        self.set_weekly_mask([True], [_idx_wk])  # Default `True`, i.e. the scheduling of maintenance on this week remains possible
+
+        self.l_wks_downtime = list()  # initialise
+
+    def set_weekly_mask(self, 
+                        l_new_weekly_maintenance_mask: List=None, 
+                        l_idxs_by_week: Optional[List[int]]=None) -> None:  
+        """ Overwrite the weekly mask (in full, or partially) for denoting the availability of scheduling maintenance, across the year of interest. 
+
+        Keyword Args:
+            l_new_weekly_maintenance_mask(List):
+                - If setting for the entire year, this will be a List of (52 weekly) values, each pertaining to a TRI-STATE value of availability status for 
+                  enacting scheduled maintenance, 
+                  i.e. One of: 
+                    > `True`: This week is available for applying scheduled maintenance.
+                    > `False`: This week is unavailable for applying scheduled maintenance (via system-wide decree). 
+                    > `None`:  This week is unavailable for applying scheduled maintenance, as the unit in question is non-operational (either pre-energisation, or retired).
+                - Else a shorter/single length List is passed to overwrite targetted element(s) of the pre-existing weekly mask. 
+            l_idxs_by_week(Optional[List[int]]):
+                - Indices of weekly mask that are to be amended (zero-indexed).
+                - If unset (==None), then the entire mask is to be replaced by incoming `l_new_weekly_maintenance_mask` argument. """
+        if all([isinstance(l_new_weekly_maintenance_mask, List), l_idxs_by_week is None]):
+            setattr(self, 'l_weekly_maintenance_mask', l_new_weekly_maintenance_mask)
+        elif all([isinstance(l_new_weekly_maintenance_mask, List), isinstance(l_idxs_by_week, List)]):
+            if len(l_new_weekly_maintenance_mask) == len(l_idxs_by_week):
+                for _j, _idx_wk in enumerate(l_idxs_by_week):
+                    self.l_weekly_maintenance_mask[_idx_wk] = l_new_weekly_maintenance_mask[_j]
+        else:
+            pass  # raise an Error
+
+    def get_weekly_mask(self, idx_by_week: Optional[int]=None) -> List:  
+        """ Return the weekly mask (in full, or partially) for denoting the availability of scheduling maintenance, across the year of interest. """
+        if idx_by_week is None:  # Default return entire mask
+            return self.l_weekly_maintenance_mask
+        else:
+            return self.l_weekly_maintenance_mask[idx_by_week]
+    
+    def get_weeks_of_downtime(self) -> List:
+        return self.l_wks_downtime
+
+    def get_sod(self) -> int:
+        """ Scheduled Outage Duration (SOD), in weeks """
+        return len([_ for _ in self.get_weekly_mask() if _ == True])
+

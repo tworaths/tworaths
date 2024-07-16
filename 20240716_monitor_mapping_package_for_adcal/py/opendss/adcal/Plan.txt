@@ -1,0 +1,19 @@
+- DataFrame needs to be populated with asset subentity type, when the 'categorize_monitors_by_subentities_of_asset_family()' method is called [presently static] ...
+
+- Change to 
+
+def categorize_monitors_by_subentities_of_asset_family(
+            o_active_circuit: automation.Circuit, 
+            l_monitors_by_asset_family: List=None,
+            d_ordinals_of_split_name_parts: Optional[Dict]=None,
+        ) -> Tuple[Dict, Dict]:
+
+""" Example Usage:
+
+    (_mons_by_subgroup, _mons_by_region  # Create a subgroup for market renewables by region
+     ) =     oDSS.o_monitors_map.Generators.subregions[_regionname].categorize_monitors_by_subentities_of_asset_family(
+             oDSS.oDSScom.App.ActiveCircuit, 
+             oDSS.o_monitors_map.Generators.subregions[_regionname].get_collection_of_mapped_monitors(),
+             d_ordinals_of_split_name_parts={'subgroup': 2}) """
+
+Instead of sending the `l_monitors_by_asset_family` argument, send the entire datatable `self.df_mapped_monitor_table`: 

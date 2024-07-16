@@ -1,0 +1,105 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal, Type
+import pandas as pd
+import numpy as np
+import logging as logs
+from enum import IntEnum
+
+# local modules
+from .subentity_typing_enum import subentity_typing
+from .subentity_base import SubentityForMonitoringBase 
+
+
+# class GetterForMonitorMappingOfAssetFamily():
+#    """ Container class for retaining the Asset Family level .get* methods. """
+class ServiceLayerForMonitorMappingOfAssetFamily():
+    """ Container class for retaining the Service Layer methods of the Asset Family level, e.g. all .get_* and map expansion methods. """
+    # __slots__ are a tuple
+    __slots__ = ('l_subgroup_labels', 'l_subregion_labels', 'subgroups', 'subregions')  # '__dict__', 
+    def __init__(self, **kwargs):
+        # logs.critical("Hello 02")  # :\t%s\n" % kwargs['b_setup_getter'])
+        # super().__init__(**kwargs)  ... no need to call super().__init__() here
+        (self.l_subgroup_labels, self.l_subregion_labels) = (list(), list())
+        (self.subgroups, self.subregions) = (dict(), dict())
+        logs.critical("Hello from \'__init__\' of the \'GetterForMonitorMappingOfAssetFamily\' sub-class, " + 
+                      "called by the \'%s\' class ...\n" % self.__class__)
+
+    # Getter methods
+    def get_collection_of_subgroup_labels(self) -> List:
+        return self.l_subgroup_labels
+
+    def get_collection_of_subregion_labels(self) -> List:
+        return self.l_subregion_labels
+
+    def get_monitor_count_by_subentity(self, 
+                                       subentity_label: str=None) -> Union[int, None]: 
+        """ 
+        Keyword Args:
+            subentity_label(str): 
+                Sub-entity of the parent asset family, as defined within either the 
+                `l_subgroup_labels`, or `l_subregion_labels` attrs, which is initialised 
+                upon construction. 
+                    
+        Returns:
+            Union[int, None]: Number of monitors within this sub-category. """
+        if subentity_label in self.get_collection_of_subgroup_labels():  # subgroups
+            return self.subgroups[subentity_label].get_monitor_count()
+        elif subentity_label in self.get_collection_of_subregion_labels():  # subregions
+            return self.subregions[subentity_label].get_monitor_count()
+        else:
+            return None
+    
+    @classmethod
+    def get_base_converted_child_properties(cls) -> Dict:
+        """ Inform base conversion methods of the mapping for child objects to lower level base class types. """
+        if all(['subgroups' in cls.__slots__,  # GetterForMonitorMappingOfAssetFamily.__slots__, 
+                'subregions' in cls.__slots__]):  # GetterForMonitorMappingOfAssetFamily.__slots__]):
+            return {'l_subgroup_labels': List[str], 
+                    'l_subregion_labels': List[str],
+                    'subgroups': Dict[str, SubentityForMonitoringBase], 
+                    'subregions': Dict[str, SubentityForMonitoringBase]}
+            """ 'l_subgroup_labels': List[str], --> 
+                'subgroups': Dict[str, SubentityForMonitoringBase], ... --> _x.__args__[0] """
+        else:
+            return {}
+    
+    # Map expansion methods
+    # def inheritance_check(self) -> Union[List, None]:
+    #     if getattr(self, 'get_collection_of_mapped_monitors', None) is not None:
+    #         return self.get_collection_of_mapped_monitors()
+    #     else:
+    #         return None
+
+    def add_subentity_child(self, 
+                            subentity_label: str=None, 
+                            o_subentity: object=None, 
+                            e_subentity_type: Optional[IntEnum]=subentity_typing.NULL): 
+        """ Create a new subentity (*group or *region) from which monitors can be categorized. 
+
+        Keyword Args:
+            subentity_label(str): 
+                Sub-entity of the parent asset family. If not defined within either the 
+                `l_subgroup_labels`, or `l_subregion_labels` attrs, it shall be added to the relevant list.
+            o_subentity(Union[subentity.SubentityOfAssetFamily, SubentityForMonitoringBase]):
+                Object that is to be added to the Parent object, as its child. 
+            e_subentity_type(Optional[IntEnum]):
+                IntEnum that denotes the type that should be assigned to the subentity object that is to be added: 
+                subgroup, subregion, capacity-adequate-portfolio etc. """
+        
+        subentity_type_as_str = e_subentity_type.name.lower()  # 'subgroup' or 'subregion'
+        
+        _inherited_map_extending_method = 'add_new_child_map'
+        if hasattr(self, _inherited_map_extending_method):
+            # Check the class of the input subentity
+            if o_subentity.__class__.__name__ not in ['SubentityOfAssetFamily', 'SubentityForMonitoringBase']:
+                raise TypeError(("Instances passed via the \'o_subentity\' argument, " + 
+                                 "must be from the following list of Types: {0}."
+                                 ).format(['SubentityOfAssetFamily', 'SubentityForMonitoringBase']))
+
+            getattr(self, _inherited_map_extending_method
+                    )(subentity_label, o_subentity, subentity_type_as_str)
+        else:
+            raise AttributeError(("Method entitled \'{0}\' is not contained within the scope of this containing class, \'{1}\'. " + 
+                                 "Ensure that the \'{2}\' class has been inherited alongside the \'{3}\' class."
+                                 ).format(_inherited_map_extending_method, self.__class__.name, 
+                                          'SubentityForMonitoringBase', 'ServiceLayerForMonitorMappingOfAssetFamily'))
+

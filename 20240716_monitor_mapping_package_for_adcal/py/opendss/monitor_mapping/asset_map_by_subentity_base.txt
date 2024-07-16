@@ -1,0 +1,65 @@
+from typing import Optional, Union, Tuple, Dict, List, Literal, Type
+import pandas as pd
+import numpy as np
+import logging as logs
+from enum import IntEnum
+
+# local modules
+from .subentity_pairing_enum import mapping_params
+# from .asset_map_by_subentity_getter import GetterForMonitorMappingOfAssetFamily 
+from .asset_map_by_subentity_services import ServiceLayerForMonitorMappingOfAssetFamily 
+from .subentity_base import SubentityForMonitoringBase 
+
+
+# class MonitorMappingOfAssetFamilyBase(SubentityForMonitoringBase, GetterForMonitorMappingOfAssetFamily):
+class MonitorMappingOfAssetFamilyBase(SubentityForMonitoringBase, ServiceLayerForMonitorMappingOfAssetFamily):
+    def __init__(self, 
+                 l_monitors_by_subentity_of_asset_family: List=None, 
+                 df_persistent_monitor_table_of_asset_family: Optional[pd.DataFrame] = None, 
+                 **kwargs: Optional[Dict]):
+
+        super().__init__(l_mapped_monitors=l_monitors_by_subentity_of_asset_family, 
+                         df_persistent_monitor_table=df_persistent_monitor_table_of_asset_family, 
+                         **kwargs)
+
+    @staticmethod
+    def amalgamate_subentity_delineated_collections_of_monitors(
+            l_subentities: List[object], 
+            e_style_of_combination: IntEnum = mapping_params.INTERSECTION_OF_MAPS,
+            df_persistent_monitor_table: Optional[pd.DataFrame] = None
+        ) -> SubentityForMonitoringBase:
+        """ Create a new `SubentityOfAssetFamilyBase` that combines the details of constituent `SubentityOfAssetFamilyBase` instances. 
+
+        Replica of similarly named method, found inside the `MonitorMappingOfCircuitByAssetFamily` class. 
+
+        Keyword Args:
+            l_subentities(List[Union[MonitorMappingOfAssetFamilyBase, SubentityForMonitoringBase]]):
+                List of `MonitorMappingOfAssetFamilyBase` or `SubentityForMonitoringBase` instances that are to be combined. 
+            e_style_of_combination(enum.IntEnum):
+                - Manner of amalgamation, specified by pre-defined enumeration (within the `mapping_params` class):
+                - Options are: 
+                    > `INTERSECTION_OF_MAPS` (i.e. chooses those monitors that are present within ALL of the input sets.
+                    > `UNION_OF_MAPS` (i.e. chooses those monitors that are present within ANY of the input sets, removing duplicates).
+                    > `EXCLUSIVE_DISJUNCTION_OF_MAPS` (chooses only those monitors that are present in either of the input sets, not both). 
+            df_monitor_table(Optional[pd.DataFrame]):
+                - The parent DataFrame of Monitor data, pertaining to the top-level container of all Monitor instances, 
+                  as encompassed within a `MonitorMappingOfAssetFamilyBase` instance. 
+                - If `None` is passed as the arg, a new datatable is generated within the constructor of the returned 
+                  `SubentityOfAssetFamily` instance.
+
+            Returns:
+                subentity.SubentityOfAssetFamilyBase: 
+                    An amalgamated collection of Monitors, taken from 2 or more input Subentity instances. """
+        
+        # Check the class of each input subentity
+        for _o_subentity in l_subentities:  # Check the types of the input arguments
+            if _o_subentity.__class__.__name__ not in ['MonitorMappingOfAssetFamilyBase', 'SubentityForMonitoringBase']:
+                raise TypeError(("Instances contained within the \'l_subentities\' argument set, " + 
+                                 "can only be derived from the Base class set: {0} != {1}."
+                                 ).format(_o_subentity.__class__.__name__, 
+                                          ['MonitorMappingOfAssetFamilyBase', 'SubentityForMonitoringBase']))
+
+        return SubentityForMonitoringBase.amalgamate_collections_of_monitors(
+                    l_subentities, e_style_of_combination, df_persistent_monitor_table, 
+                    b_skip_subentity_class_comparison=True)
+

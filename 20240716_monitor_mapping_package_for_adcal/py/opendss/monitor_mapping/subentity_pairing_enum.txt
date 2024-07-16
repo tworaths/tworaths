@@ -1,0 +1,8 @@
+from enum import IntEnum
+
+
+class mapping_params(IntEnum):
+    INTERSECTION_OF_MAPS = 1
+    UNION_OF_MAPS = 2
+    EXCLUSIVE_DISJUNCTION_OF_MAPS = 3  # EXCLUSIVE-OR, Circled-Plus (Unicode \u2295). See https://en.wikipedia.org/wiki/Exclusive_or
+    # COMPLEMENT_OF_A_MAP = 4

@@ -1,0 +1,60 @@
+from typing import Union, List, Literal  
+from enum import IntEnum
+
+
+class subentity_typing(IntEnum):
+    NULL = 0  # i.e. unassigned
+    SUBGROUP = 1
+    SUBREGION = 2
+    CAP = 3  # Capacity-Adequate-Portfolio
+    
+    @classmethod
+    def get_names(cls) -> List[str]:
+        return [_ev.name for _ev in cls._value2member_map_.values()]
+    
+    @classmethod
+    def has_name(cls, name) -> Union[Literal[True], Literal[False]]:
+        # return name in cls._value2member_map_
+        return name in cls.get_names()
+
+
+class subgroup_fields(IntEnum):
+    # formerly, `types_of_subgroup_entity` ...
+    NULL = 0  # i.e. unassigned
+    # Storage sub-types ...
+    PHES = 1  
+    BESS = 2
+    # Generator sub-types ...
+    OCGT = 3
+    ST = 4
+    DSU = 5
+    RORH = 6
+    ICXDC = 7
+    WIND_ONS = 8
+    PV = 9
+    
+    @classmethod
+    def get_names(cls) -> List[str]:
+        return [_ev.name for _ev in cls._value2member_map_.values()]
+    
+    @classmethod
+    def has_name(cls, name) -> Union[Literal[True], Literal[False]]:
+        # return name in cls._value2member_map_
+        return name in cls.get_names()
+
+
+class subregion_fields(IntEnum):
+    # formerly, `types_of_subregion_entity` ...
+    NULL = 0  # i.e. unassigned
+    IE = 1
+    NI = 2
+    
+    @classmethod
+    def get_names(cls) -> List[str]:
+        return [_ev.name for _ev in cls._value2member_map_.values()]
+    
+    @classmethod
+    def has_name(cls, name) -> Union[Literal[True], Literal[False]]:
+        # return name in cls._value2member_map_
+        return name in cls.get_names()
+
